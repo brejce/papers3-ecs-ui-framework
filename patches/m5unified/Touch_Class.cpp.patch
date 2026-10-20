@@ -1,0 +1,45 @@
+--- a/src/utility/Touch_Class.cpp
++++ b/src/utility/Touch_Class.cpp
+@@ -3,10 +3,42 @@
+ 
+ #include "Touch_Class.hpp"
+ 
++#if defined(ESP_PLATFORM)
++#include <freertos/FreeRTOS.h>
++#include <freertos/semphr.h>
++#endif
++
+ namespace m5
+ {
++  void Touch_Class::initThreadSafety(void)
++  {
++#if defined(ESP_PLATFORM)
++    if (!_i2c_mutex) { _i2c_mutex = (void*)xSemaphoreCreateRecursiveMutex(); }
++#endif
++  }
++
++  // ★ 本项目补丁：只读原始点，不推进状态机（见头文件注释 —— 用 update() 会把
++  //   固件页面依赖的 wasPressed() 状态提前消费掉，页面就按不动了）。
++  std::uint_fast8_t Touch_Class::readRawOnly(m5gfx::touch_point_t* tp, std::uint_fast8_t count)
++  {
++    if (!_gfx || count == 0) { return 0; }
++#if defined(ESP_PLATFORM)
++    struct _M5uiUnlockR { void* m; ~_M5uiUnlockR() { if (m) xSemaphoreGiveRecursive((SemaphoreHandle_t)m); } } _m5ui_ulr{ _i2c_mutex };
++    if (_i2c_mutex) { xSemaphoreTakeRecursive((SemaphoreHandle_t)_i2c_mutex, portMAX_DELAY); }
++#endif
++    std::uint_fast8_t n = _gfx->getTouchRaw(tp, count);
++    if (n) { _gfx->convertRawXY(tp, n); }
++    return n;
++  }
++
+   void Touch_Class::update(std::uint32_t msec)
+   {
++#if defined(ESP_PLATFORM)
++    // ★ 本项目补丁：两个任务都会调 update()（主循环的 M5.update() + core1 触摸采样任务），
++    //   而触摸链路的 I2C 没有任何互斥 → 这里串行化，避免并发传输。
++    struct _M5uiUnlock { void* m; ~_M5uiUnlock() { if (m) xSemaphoreGiveRecursive((SemaphoreHandle_t)m); } } _m5ui_ul{ _i2c_mutex };
++    if (_i2c_mutex) { xSemaphoreTakeRecursive((SemaphoreHandle_t)_i2c_mutex, portMAX_DELAY); }
++#endif
+     if (msec - _last_msec <= TOUCH_MIN_UPDATE_MSEC)  /// Avoid high frequency updates
+     {
+       if (_detail_count == 0) { return; }

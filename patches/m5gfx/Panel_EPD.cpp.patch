@@ -1,0 +1,438 @@
+--- a/src/lgfx/v1/platforms/esp32/Panel_EPD.cpp
++++ b/src/lgfx/v1/platforms/esp32/Panel_EPD.cpp
+@@ -223,9 +223,19 @@
+     lut_total_step += _config_detail.lut_text_step;
+     lut_total_step += _config_detail.lut_fast_step;
+     lut_total_step += _config_detail.lut_fastest_step;
++    // lab hook (epd_lut_lab): reserve headroom above the stock total.
++    //
++    // reload_lut_table() refuses any swap whose combined step count exceeds this capacity, and
++    // init_intenal() only ever sees the stock step counts (4+32+32+10+7 = 85), so a block
++    // installed later cannot be larger than the stock one. That is a silent trap: an 11-row
++    // popup waveform in the fast block needs 86 and gets refused, the caller's install_lut()
++    // returns false, and the screen is left showing whatever was drawn before the swap -- which
++    // looks like a dead white screen, not like a failed install.
++    static constexpr size_t LUT_STEP_SLACK = 16;
++    _lut_alloc_steps = lut_total_step + LUT_STEP_SLACK;   // capacity honoured by reload_lut_table()
+ 
+     // EPD制御用LUT (2ピクセルセット)
+-    _lut_2pixel = (uint8_t *)heap_caps_malloc(lut_total_step * 256 * sizeof(uint16_t), MALLOC_CAP_DMA);
++    _lut_2pixel = (uint8_t *)heap_caps_malloc(_lut_alloc_steps * 256 * sizeof(uint16_t), MALLOC_CAP_DMA);
+ 
+     // リフレッシュの進行状況付きフレームバッファ (下位8bitはピクセル2個分の16階調値そのまま)
+     // 偶数インデクスは処理中のバッファ、奇数インデクスは予約バッファ。処理中のバッファの完了時に予約バッファの値が参照される。
+@@ -255,7 +265,33 @@
+     // グレーの初期値をセット
+     memset(_step_framebuf, 0x88, (memory_w * memory_h / 2) * 2 * sizeof(uint16_t));
+ 
+-    auto dst = _lut_2pixel;
++    build_lut_table(_lut_2pixel);
++
++    _update_queue_handle = xQueueCreate(8, sizeof(update_data_t));
++    auto task_priority = _config_detail.task_priority;
++    auto task_pinned_core = _config_detail.task_pinned_core;
++    // ★ 消抖：epd 推屏任务留在**创建它的核**（app.begin 在 core0 → epd 就在 core0）。
++    //   原来写的是「创建核 +1」，是为了让推屏和 UI 分核；现在 UI 整个搬到 core1 独占，
++    //   推屏再跑到 core1 就是和 UI 抢同一个核（UI 每帧被波形堵住）—— 所以改成同核。
++    if (task_pinned_core >= portNUM_PROCESSORS)
++    {
++      task_pinned_core = xPortGetCoreID();
++    }
++    xTaskCreatePinnedToCore((TaskFunction_t)task_update, "epd", 4096, this, task_priority, &_task_update_handle, task_pinned_core);
++    // タスク側とメイン側の処理CPUコアが異なる場合、PSRAMのキャッシュ同期をしないとフレームバッファが即時反映されない点に注意
++
++    return true;
++  }
++
++  // lab helper (epd_lut_lab): flatten config_detail()'s five waveform tables into the
++  // 2-pixel-pair lookup table (_lut_2pixel) that step_*() and blit_dmabuf() index into.
++  // Each source row expands to 256 entries; each entry packs the two pixels' 2-bit actions
++  // ((high-nibble action << 2) | low-nibble action) so one byte serves a pixel pair.
++  // Blocks are laid out eraser, quality, text, fast, fastest; _lut_offset_table[] records each
++  // mode's starting row, which is what task_update() uses to compute lut_offset.
++  void Panel_EPD::build_lut_table(uint8_t* dst)
++  {
++    if (dst == nullptr) { return; }
+     memset(dst, 0x0F, 256);
+     size_t lindex = 0;
+     for (int epd_mode = 0; epd_mode < 5; ++epd_mode) {
+@@ -271,9 +307,7 @@
+       if (lut_src == nullptr) { continue; }
+       _lut_offset_table[epd_mode] = lindex >> 8;
+       _lut_remain_table[epd_mode] = lut_step;
+-// ESP_LOGV("dbg", "\n\nepd_mode: %d, offset: %d, remain: %d\n", epd_mode, _lut_offset_table[epd_mode], _lut_remain_table[epd_mode]);
+-// printf("\nepd_mode: %d, offset: %d, remain: %d\n\n", epd_mode, _lut_offset_table[epd_mode], _lut_remain_table[epd_mode]);
+-      for (int step = 0; step < lut_step; ++step) {
++      for (size_t step = 0; step < lut_step; ++step) {
+         auto lu = lut_src[0];
+         for (int lv = 0; lv < 256; ++lv) {
+           dst[lindex] = (((lu >> ((lv >> 4) << 1)) & 3) << 2) + ((lu >> ((lv & 15) << 1)) & 3);
+@@ -282,17 +316,353 @@
+         ++lut_src;
+       }
+     }
++  }
+ 
+-    _update_queue_handle = xQueueCreate(8, sizeof(update_data_t));
+-    auto task_priority = _config_detail.task_priority;
+-    auto task_pinned_core = _config_detail.task_pinned_core;
+-    if (task_pinned_core >= portNUM_PROCESSORS)
++  // lab hook (epd_lut_lab): swap the waveform without a full re-init.
++  // Deliberately does NOT re-run init_intenal(): that would leak the framebuffers and start a
++  // second task_update task. _step_framebuf still holds the per-pixel current-gray state, so a
++  // waveform change simply continues from whatever gray the panel is in now.
++  bool Panel_EPD::reload_lut_table(void)
++  {
++    if (_lut_2pixel == nullptr)
+     {
+-      task_pinned_core = (xPortGetCoreID() + 1) % portNUM_PROCESSORS;
++      printf("Panel_EPD: reload_lut_table: _lut_2pixel is null\n");
++      return false;
++    }
++    // Not a refusal: at boot, M5.begin() -> init_impl() -> clear() auto-pushes an update
++    // (auto_display is still on at that point), so the first swap arrives while the panel is
++    // still busy. Wait for it to drain instead of failing the swap.
++    for (int i = 0; i < 3000 && _display_busy; ++i)
++    {
++      vTaskDelay(1);
++    }
++    if (_display_busy)
++    {
++      printf("Panel_EPD: reload_lut_table: still busy after wait\n");
++      return false;
++    }
++    // _lut_2pixel was sized once, in init_intenal(); refuse a swap that would not fit.
++    size_t need = lut_eraser_step
++                + _config_detail.lut_quality_step
++                + _config_detail.lut_text_step
++                + _config_detail.lut_fast_step
++                + _config_detail.lut_fastest_step;
++    if (need > _lut_alloc_steps)
++    {
++      // printf, not ESP_LOGx: this TU does not include esp_log.h, so ESP_LOGW silently
++      // compiles out under its `#if defined(ESP_LOGW)` guard and the reason is invisible.
++      printf("Panel_EPD: reload_lut_table needs %u steps, only %u allocated\n",
++             (unsigned)need, (unsigned)_lut_alloc_steps);
++      return false;
++    }
++    build_lut_table(_lut_2pixel);
++    return true;
++  }
++
++bool Panel_EPD::copy_region_out(int32_t x0, int32_t y0, int32_t w, int32_t h, uint8_t* dst)
++  {
++    if (_buf == nullptr || dst == nullptr || w <= 0 || h <= 0) { return false; }
++    const size_t stride = (size_t)((_cfg.panel_width + 1) >> 1);   // _buf row stride, in bytes
++    const size_t dstride = (size_t)((w + 1) >> 1);                 // destination row stride
++    const uint_fast8_t r = _internal_rotation;
++    for (int32_t j = 0; j < h; ++j)
++    {
++      uint8_t* drow = dst + (size_t)j * dstride;
++      for (int32_t i = 0; i < w; ++i)
++      {
++        int32_t x = x0 + i, y = y0 + j;
++        // identical mapping to _draw_pixels(), recomputed per pixel
++        if (r & 1) { int32_t t = x; x = y; y = t; }
++        const uint_fast8_t rb = 1 << r;
++        if (rb & 0b11000110) { x = _cfg.panel_width  - 1 - x; }
++        if (rb & 0b10011100) { y = _cfg.panel_height - 1 - y; }
++        if (x < 0 || y < 0 || x >= _cfg.panel_width || y >= _cfg.panel_height) { continue; }
++        const uint8_t* p = &_buf[(size_t)(x >> 1) + (size_t)y * stride];
++        const uint8_t v = (x & 1) ? (*p & 0x0F) : (uint8_t)(*p >> 4);
++        if (i & 1) { drow[i >> 1] |= v; }
++        else       { drow[i >> 1] = (uint8_t)(v << 4); }
++      }
++    }
++    return true;
++  }
++
++  bool Panel_EPD::copy_region_in(int32_t x0, int32_t y0, int32_t w, int32_t h, const uint8_t* src)
++  {
++    if (_buf == nullptr || src == nullptr || w <= 0 || h <= 0) { return false; }
++    const size_t stride = (size_t)((_cfg.panel_width + 1) >> 1);
++    const size_t sstride = (size_t)((w + 1) >> 1);
++    const uint_fast8_t r = _internal_rotation;
++    for (int32_t j = 0; j < h; ++j)
++    {
++      const uint8_t* srow = src + (size_t)j * sstride;
++      for (int32_t i = 0; i < w; ++i)
++      {
++        int32_t x = x0 + i, y = y0 + j;
++        if (r & 1) { int32_t t = x; x = y; y = t; }
++        const uint_fast8_t rb = 1 << r;
++        if (rb & 0b11000110) { x = _cfg.panel_width  - 1 - x; }
++        if (rb & 0b10011100) { y = _cfg.panel_height - 1 - y; }
++        if (x < 0 || y < 0 || x >= _cfg.panel_width || y >= _cfg.panel_height) { continue; }
++        const uint8_t v = (i & 1) ? (srow[i >> 1] & 0x0F) : (uint8_t)(srow[i >> 1] >> 4);
++        uint8_t* p = &_buf[(size_t)(x >> 1) + (size_t)y * stride];
++        if (x & 1) { *p = (uint8_t)((*p & 0xF0) | v); }
++        else       { *p = (uint8_t)((*p & 0x0F) | (v << 4)); }
++      }
++    }
++    return true;
++  }
++
++  // ══════════════════════════════════════════════════════════════
++  // m5ui fast path —— 与上面两个**逐点等价**，只把循环不变量提出去。
++  //
++  // 原版每个像素要做：swap 分支 + 两次条件取反 + 一次 y*stride 乘法。
++  // 但这四个变换在 (i,j) 上是**仿射**的 → 每行起点 + 每像素固定增量就够。
++  //
++  // 等价性不是"看着像"：下面先用**与原版逐字相同**的表达式算出
++  // (i=0,j=0)、(i=1,j=0)、(i=0,j=1) 三点，三点之差即 ax/ay（每像素）与 bx/by（每行）。
++  // 整数运算 + 仿射 ⇒ 每个像素落到的 (x,y) 与原版逐点相同。
++  // 开机还有一次自检（plugin.cpp）：全屏 out 两版 memcmp，不等就不启用快版。
++  // ══════════════════════════════════════════════════════════════
++  // ★★ -O3：本文件在 IDF 里是 -Og（调试级）编的 —— 而这里逐像素跑 518K 次，
++  //    -Og 的代码质量差好几倍。m5gfx 作者自己给热路径（_draw_pixels / blit_dmabuf）
++  //    也是这么加的。实测这一步比任何循环重排都值钱。
++  __attribute__((optimize("-O3")))
++  bool Panel_EPD::copy_region_out_fast(int32_t x0, int32_t y0, int32_t w, int32_t h, uint8_t* dst)
++  {
++    if (_buf == nullptr || dst == nullptr || w <= 0 || h <= 0) { return false; }
++    const int32_t pw = _cfg.panel_width, ph = _cfg.panel_height;
++    const int32_t stride  = (pw + 1) >> 1;
++    const int32_t dstride = (w + 1) >> 1;
++    const uint_fast8_t r  = _internal_rotation;
++    const uint_fast8_t rb = 1 << r;
++    const int sw = (r & 1) ? 1 : 0;
++    const int fx = (rb & 0b11000110) ? 1 : 0;
++    const int fy = (rb & 0b10011100) ? 1 : 0;
++
++    auto map = [&](int32_t xi, int32_t yj, int32_t& ox, int32_t& oy) {
++      int32_t x = xi, y = yj;
++      if (sw) { int32_t t = x; x = y; y = t; }
++      if (fx) { x = pw - 1 - x; }
++      if (fy) { y = ph - 1 - y; }
++      ox = x; oy = y;
++    };
++
++    int32_t x00, y00, x10, y10, x01, y01;
++    map(x0,     y0,     x00, y00);
++    map(x0 + 1, y0,     x10, y10);
++    map(x0,     y0 + 1, x01, y01);
++    const int32_t ax = x10 - x00, ay = y10 - y00;   // 每像素增量
++    const int32_t bx = x01 - x00, by = y01 - y00;   // 每行增量
++
++    // 逐像素兜底（越界要"跳过不写"，与原版一致）—— 只有边缘块用它
++    auto one = [&](int32_t i, int32_t j, uint8_t& out) -> bool {
++      const int32_t x = x00 + ax * i + bx * j;
++      const int32_t y = y00 + ay * i + by * j;
++      if (x < 0 || y < 0 || x >= pw || y >= ph) return false;
++      const uint8_t byte = _buf[(size_t)(x >> 1) + (size_t)y * stride];
++      out = (x & 1) ? (byte & 0x0F) : (uint8_t)(byte >> 4);
++      return true;
++    };
++    auto put = [&](uint8_t* drow, int32_t i, uint8_t v) {
++      if (i & 1) drow[i >> 1] |= v;
++      else       drow[i >> 1] = (uint8_t)(v << 4);
++    };
++
++    // ── 情形 A：ay == 0 —— 目标行映射到源里**连续**的一段，顺序读就行，分块没意义 ──
++    if (ay == 0)
++    {
++      for (int32_t j = 0; j < h; ++j)
++      {
++        uint8_t* drow = dst + (size_t)j * dstride;
++        for (int32_t i = 0; i < w; ++i)
++        {
++          uint8_t v;
++          if (one(i, j, v)) put(drow, i, v);
++        }
++      }
++      return true;
++    }
++
++    // ── 情形 B：转置（ax == 0, ay = ±1）—— 2D 分块 ──
++    //   不分块时：目标第 j 行 ← 源第 x 列，逐像素跳 stride(=270) 字节
++    //   → 一个 32B cache line 只用 1 个 nibble（32 倍浪费）。
++    //   分块后：源侧一次读 TB 个连续 nibble、目标侧一次写 TC 个连续 nibble，
++    //   每块(TC×TB=512 像素)的 cache line 数从 512 降到 ~(TC+TB)=48。
++    //   ★ 边界块（块内出现越界像素）直接退回逐像素版 —— 块很小，且这样绝不改变
++    //     "越界=跳过不写"的语义。
++    constexpr int32_t TB = 32;   // 目标列块宽（= 源侧一行里连续 nibble 数）
++    constexpr int32_t TC = 16;   // 目标行块高
++    static uint8_t tile[TC][TB];
++
++    for (int32_t j0 = 0; j0 < h; j0 += TB)
++    {
++      const int32_t j1 = (j0 + TB < h) ? (j0 + TB) : h;
++      const int32_t xa = x00 + ax * 0    + bx * j0;          // 该块 x 范围（ax=0）
++      const int32_t xb2 = x00 + ax * 0   + bx * (j1 - 1);
++      const int32_t xlo = (xa < xb2) ? xa : xb2, xhi = (xa < xb2) ? xb2 : xa;
++
++      for (int32_t i0 = 0; i0 < w; i0 += TC)
++      {
++        const int32_t i1 = (i0 + TC < w) ? (i0 + TC) : w;
++        const int32_t ya = y00 + ay * i0  + by * 0;
++        const int32_t yb2 = y00 + ay * (i1 - 1) + by * 0;
++        const int32_t ylo = (ya < yb2) ? ya : yb2, yhi = (ya < yb2) ? yb2 : ya;
++
++        if (xlo >= 0 && xhi < pw && ylo >= 0 && yhi < ph)
++        {
++          // ① 收集：每个源行 y 读 TB 个**连续** nibble
++          for (int32_t i = i0; i < i1; ++i)
++          {
++            const uint8_t* srow = &_buf[(size_t)(y00 + ay * i) * stride];
++            const int32_t  xbase = x00 + bx * j0;
++            for (int32_t j = j0; j < j1; ++j)
++            {
++              const int32_t x = xbase + bx * (j - j0);
++              const uint8_t byte = srow[x >> 1];
++              tile[i - i0][j - j0] = (x & 1) ? (byte & 0x0F) : (uint8_t)(byte >> 4);
++            }
++          }
++          // ② 写出：目标每行写 TC 个**连续** nibble
++          for (int32_t j = j0; j < j1; ++j)
++          {
++            uint8_t* drow = dst + (size_t)j * dstride;
++            for (int32_t i = i0; i < i1; ++i) put(drow, i, tile[i - i0][j - j0]);
++          }
++        }
++        else
++        {
++          for (int32_t j = j0; j < j1; ++j)
++          {
++            uint8_t* drow = dst + (size_t)j * dstride;
++            for (int32_t i = i0; i < i1; ++i)
++            {
++              uint8_t v;
++              if (one(i, j, v)) put(drow, i, v);
++            }
++          }
++        }
++      }
++    }
++    return true;
++  }
++
++  __attribute__((optimize("-O3")))     // 同 copy_region_out_fast：本文件是 -Og 编的
++  bool Panel_EPD::copy_region_in_fast(int32_t x0, int32_t y0, int32_t w, int32_t h, const uint8_t* src)
++  {
++    if (_buf == nullptr || src == nullptr || w <= 0 || h <= 0) { return false; }
++    const int32_t pw = _cfg.panel_width, ph = _cfg.panel_height;
++    const int32_t stride  = (pw + 1) >> 1;
++    const int32_t sstride = (w + 1) >> 1;
++    const uint_fast8_t r  = _internal_rotation;
++    const uint_fast8_t rb = 1 << r;
++    const int sw = (r & 1) ? 1 : 0;
++    const int fx = (rb & 0b11000110) ? 1 : 0;
++    const int fy = (rb & 0b10011100) ? 1 : 0;
++
++    auto map = [&](int32_t xi, int32_t yj, int32_t& ox, int32_t& oy) {
++      int32_t x = xi, y = yj;
++      if (sw) { int32_t t = x; x = y; y = t; }
++      if (fx) { x = pw - 1 - x; }
++      if (fy) { y = ph - 1 - y; }
++      ox = x; oy = y;
++    };
++
++    int32_t x00, y00, x10, y10, x01, y01;
++    map(x0,     y0,     x00, y00);
++    map(x0 + 1, y0,     x10, y10);
++    map(x0,     y0 + 1, x01, y01);
++    const int32_t ax = x10 - x00, ay = y10 - y00;
++    const int32_t bx = x01 - x00, by = y01 - y00;
++
++    // 逐像素兜底（越界要"跳过不写"，与原版一致）—— 只有边缘块用它
++    auto one = [&](int32_t i, int32_t j, uint8_t& out) -> bool {
++      const int32_t x = x00 + ax * i + bx * j;
++      const int32_t y = y00 + ay * i + by * j;
++      if (x < 0 || y < 0 || x >= pw || y >= ph) return false;
++      const uint8_t* srow = src + (size_t)j * sstride;
++      out = (i & 1) ? (srow[i >> 1] & 0x0F) : (uint8_t)(srow[i >> 1] >> 4);
++      return true;
++    };
++
++    // ── 情形 A：ay == 0 —— _buf 侧是连续的一段，顺序写就行 ──
++    if (ay == 0)
++    {
++      for (int32_t j = 0; j < h; ++j)
++      {
++        const uint8_t* srow = src + (size_t)j * sstride;
++        for (int32_t i = 0; i < w; ++i)
++        {
++          uint8_t v;
++          if (!one(i, j, v)) continue;
++          const int32_t x = x00 + ax * i + bx * j;
++          uint8_t* p = &_buf[(size_t)(x >> 1) + (size_t)(y00 + ay * i + by * j) * stride];
++          if (x & 1) { *p = (uint8_t)((*p & 0xF0) | v); }
++          else       { *p = (uint8_t)((*p & 0x0F) | (v << 4)); }
++        }
++      }
++      return true;
+     }
+-    xTaskCreatePinnedToCore((TaskFunction_t)task_update, "epd", 4096, this, task_priority, &_task_update_handle, task_pinned_core);
+-    // タスク側とメイン側の処理CPUコアが異なる場合、PSRAMのキャッシュ同期をしないとフレームバッファが即時反映されない点に注意
+ 
++    // ── 情形 B：转置 —— 2D 分块（与 out 同一个套路，只是两侧角色对调）──
++    //   src 侧按行读 TC 个连续 nibble；_buf 侧按行（y 固定）写 TB 个连续 nibble。
++    //   不分块时 src 是按**列**读的（每像素跳 sstride 字节）→ 32 倍 cache 浪费。
++    constexpr int32_t TB = 32;
++    constexpr int32_t TC = 16;
++    static uint8_t tile[TC][TB];
++
++    for (int32_t j0 = 0; j0 < h; j0 += TB)
++    {
++      const int32_t j1 = (j0 + TB < h) ? (j0 + TB) : h;
++      const int32_t xa = x00 + bx * j0, xb2 = x00 + bx * (j1 - 1);
++      const int32_t xlo = (xa < xb2) ? xa : xb2, xhi = (xa < xb2) ? xb2 : xa;
++
++      for (int32_t i0 = 0; i0 < w; i0 += TC)
++      {
++        const int32_t i1 = (i0 + TC < w) ? (i0 + TC) : w;
++        const int32_t ya = y00 + ay * i0, yb2 = y00 + ay * (i1 - 1);
++        const int32_t ylo = (ya < yb2) ? ya : yb2, yhi = (ya < yb2) ? yb2 : ya;
++
++        if (xlo >= 0 && xhi < pw && ylo >= 0 && yhi < ph)
++        {
++          // ① 收集：src 逐行读 TC 个连续 nibble
++          for (int32_t j = j0; j < j1; ++j)
++          {
++            const uint8_t* srow = src + (size_t)j * sstride;
++            for (int32_t i = i0; i < i1; ++i)
++              tile[i - i0][j - j0] = (i & 1) ? (srow[i >> 1] & 0x0F)
++                                             : (uint8_t)(srow[i >> 1] >> 4);
++          }
++          // ② 写出：_buf 逐行（y 固定）写 TB 个连续 nibble
++          for (int32_t i = i0; i < i1; ++i)
++          {
++            uint8_t* brow = &_buf[(size_t)(y00 + ay * i) * stride];
++            for (int32_t j = j0; j < j1; ++j)
++            {
++              const int32_t x = x00 + bx * j;
++              uint8_t& p = brow[x >> 1];
++              const uint8_t v = tile[i - i0][j - j0];
++              if (x & 1) p = (uint8_t)((p & 0xF0) | v);
++              else       p = (uint8_t)((p & 0x0F) | (v << 4));
++            }
++          }
++        }
++        else
++        {
++          for (int32_t j = j0; j < j1; ++j)
++          {
++            for (int32_t i = i0; i < i1; ++i)
++            {
++              uint8_t v;
++              if (!one(i, j, v)) continue;
++              const int32_t x = x00 + ax * i + bx * j;
++              uint8_t* p = &_buf[(size_t)(x >> 1) + (size_t)(y00 + ay * i + by * j) * stride];
++              if (x & 1) { *p = (uint8_t)((*p & 0xF0) | v); }
++              else       { *p = (uint8_t)((*p & 0x0F) | (v << 4)); }
++            }
++          }
++        }
++      }
++    }
+     return true;
+   }
+ 
+@@ -575,6 +945,7 @@
+     uint_fast16_t ys = _range_mod.top    + _cfg.offset_y;
+     uint_fast16_t ye = _range_mod.bottom + _cfg.offset_y;
+ 
++
+     update_data_t upd;
+     upd.x = xs;
+     upd.w = xe - xs + 2;

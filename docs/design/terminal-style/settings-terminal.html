@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="UTF-8">
+<title>settings — terminal style</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:#1b1b1b;color:#bbb;font-family:'JetBrains Mono','Fira Code','DejaVu Sans Mono','Noto Sans Mono CJK SC',monospace}
+body{padding:24px;display:flex;gap:28px;align-items:flex-start;justify-content:center;flex-wrap:wrap}
+:root{--gray:#191919}
+.scr{width:540px;height:960px;position:relative;overflow:hidden;flex:none;color:#000;font-size:20px;line-height:1;
+ background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='1' height='1' fill='%23000' fill-opacity='.9'/%3E%3C/svg%3E");
+ box-shadow:0 0 0 12px #0d0d0d,0 20px 60px #000}
+.a{position:absolute}
+.g{color:var(--gray)}
+.bar{left:0;top:0;width:540px;height:60px;border-bottom:1px solid #000}
+.bar span{position:absolute;top:20px;letter-spacing:2px;color:var(--gray)}
+.bar .back{left:24px;color:#000}
+.hero{left:24px;top:80px;font-size:38px;white-space:pre;line-height:48px}
+.me{background:#000;color:#fff;padding:0 5px;margin:0 2px}
+.sub{left:24px;top:136px;font-size:19px;letter-spacing:1px;color:var(--gray)}
+.h{left:24px;font-size:18px;letter-spacing:2px;color:var(--gray)}
+/* 行：KEY ..... VALUE */
+.row{position:absolute;left:24px;width:492px;display:flex;align-items:center;font-size:19px;letter-spacing:1px}
+.row .k{color:var(--gray);white-space:nowrap}
+.row .l{flex:1;overflow:hidden;white-space:nowrap;color:var(--gray);letter-spacing:3px;margin:0 8px;line-height:1}
+.row .v{font-size:20px;color:#000;white-space:nowrap}
+.row.nav{border-bottom:1px dashed var(--gray)}
+.row.nav .k{color:#000;font-size:20px}
+/* 选项组：段式按钮，选中=反白（每组唯一黑块） */
+.seg{position:absolute;left:24px;width:492px;display:flex;gap:0}
+.seg b{flex:1;font-weight:400;border:1px solid #000;margin-left:-1px;text-align:center;letter-spacing:1px;display:flex;align-items:center;justify-content:center}
+.seg b:first-child{margin-left:0}
+.seg b.on{background:#000;color:#fff}
+.seg b small{font-size:16px}
+/* 开关 */
+.tg{position:absolute;right:24px;width:100px;height:44px;border:2px solid #000;display:flex;font-size:19px;letter-spacing:2px}
+.tg i{flex:1;font-style:normal;display:flex;align-items:center;justify-content:center}
+.tg i.on{background:#000;color:#fff}
+/* 列表项（字体/屏保） */
+.li{position:absolute;left:24px;width:492px;height:52px;display:flex;align-items:center;padding:0 12px;border:1px solid #000;letter-spacing:1px}
+.li .s{flex:1;overflow:hidden;white-space:nowrap}
+.li.on{background:#000;color:#fff}
+.li.off{border-style:dashed;border-color:var(--gray);color:var(--gray)}
+.warn{left:24px;width:492px;border:2px solid #000;text-align:center;letter-spacing:2px;padding:11px 0}
+.btn{left:24px;top:840px;width:492px;height:80px;background:#000;color:#fff;border:2px solid #fff;outline:1px solid #000;
+ font:inherit;font-size:24px;letter-spacing:12px;text-indent:12px;display:flex;align-items:center;justify-content:center}
+.log{left:24px;font-size:19px;letter-spacing:1px;color:var(--gray)}
+.log.n{color:#000}
+.cur{display:inline-block;width:12px;height:3px;background:#000;margin-left:4px}
+.cmt{font-size:17px;letter-spacing:.5px;color:var(--gray);left:24px}
+.side{width:320px;font-size:13px;line-height:1.7;position:sticky;top:24px}
+.side h3{color:#eee;margin:14px 0 6px;font-size:14px}
+.side a{display:block;color:#9cf;cursor:pointer;text-decoration:none}
+.side code{color:#9cf}
+.lab{color:#777;font-size:12px;text-align:center;margin-bottom:8px;letter-spacing:1px}
+</style></head><body>
+<div class="side">
+  <h3>settings · terminal style</h3>
+  <div>6 屏，对应 settings.h 的 6 个 Page。</div>
+  <h3>规则速记</h3>
+  <div>· 标题 = 纯文字 <code>CONFIG / 模块名</code>，无反白<br>· 值 = <code>KEY ... VALUE</code> 点线行<br>· 选项 = 段式按钮，选中反白（每组唯一黑块）<br>· 开关 = <code>[OFF|ON]</code> 两段<br>· 返回 = 状态栏左侧 <code>&lt; BACK</code>，与 terminal 退出同一手势<br>· 黑块只给：选中项 / COMMIT<br>· 保存 = 底部黑块 <code>COMMIT</code></div>
+</div>
+<div id="all" style="display:contents"></div>
+<script>
+const R=(y,k,v,o={})=>`<div class="row ${o.nav?'nav':''}" style="top:${y}px;${o.h?'height:'+o.h+'px':''}"><span class="k">${k}</span><span class="l">${'.'.repeat(70)}</span><span class="v">${v}</span></div>`;
+const SEG=(y,h,items,sel,fs)=>`<div class="seg" style="top:${y}px;height:${h}px;${fs?'font-size:'+fs+'px':''}">${items.map((t,i)=>`<b class="${i==sel?'on':''}">${t}</b>`).join('')}</div>`;
+const SEGW=(y,h,items,sel,left,w)=>`<div class="seg" style="top:${y}px;height:${h}px;left:${left}px;width:${w}px">${items.map((t,i)=>`<b class="${i==sel?'on':''}">${t}</b>`).join('')}</div>`;
+const TG=(y,on)=>`<div class="tg" style="top:${y}px"><i class="${on?'':'on'}">OFF</i><i class="${on?'on':''}">ON</i></div>`;
+const H=(y,t)=>`<div class="a h" style="top:${y}px">${t}</div>`;
+const C=(y,t)=>`<div class="a cmt" style="top:${y}px">// ${t}</div>`;
+const BAR=(left,mid)=>`<div class="a bar"><span class="back" style="left:24px">&lt; BACK</span><span style="left:226px">${mid||'20:20'}</span><span style="right:24px">BAT 100%</span></div>`;
+const HERO=(pre,me,post,sub)=>`<div class="a hero">${(pre.replace('world.','').replace('config.','CONFIG / ')+me).toUpperCase().replace(/^CONFIG$/,'CONFIG')}</div><div class="a sub">// ${sub}</div>`;
+const LI=(y,t,right,st)=>`<div class="li ${st||''}" style="top:${y}px"><span class="s">&gt; ${t}</span><span>${right||''}</span></div>`;
+
+const S=[];
+// 1 主页
+S.push({n:'01 主页 · config()',h:BAR('', '20:20').replace('&lt; BACK','&lt; EXIT')+HERO('world.','config','();','6 个模块 · 点一行进入')
+ +[['01','network','WIFI · AP'],['02','display','0x00 · 3PX'],['03','font','28PX · BUILTIN'],['04','power','5 MIN'],['05','about','FW 1.0.0']].map((r,i)=>
+   `<div class="row nav" style="top:${190+i*70}px;height:70px"><span class="k">${r[0]}&nbsp;&nbsp;${r[1]}</span><span class="l">${'.'.repeat(60)}</span><span class="v" style="font-size:18px">${r[2]}&nbsp;&gt;</span></div>`).join('')
+ +`<div class="a warn" style="top:560px">[ FACTORY RESET ]</div><div class="a cmt" style="top:620px;text-align:center;width:492px">// 双击执行 · 清 NVS + 回内置字体</div>`
+ +`<div class="a log n" style="top:700px">&gt; 改动只在内存，COMMIT 才写 NVS</div><div class="a log" style="top:732px">&gt; AWAITING COMMAND<span class="cur"></span></div>`
+ +`<div class="a btn">COMMIT</div>`});
+// 2 显示
+S.push({n:'02 显示 · config.display()',h:BAR()+HERO('config.','display','();','波形 · 描边 · 墨色')
+ +H(184,'// WAVEFORM')+R(212,'DEFAULT','')+TG(206,true)
+ +SEGW(268,52,['gc13','text12','fast'],-1,24,492)+SEGW(318,52,['bw4','quality'],-1,24,492)
+ +C(380,'ON = 部件自选 · OFF = 强制选中档')
+ +H(430,'// BORDER')+SEG(458,52,['2PX','3PX','4PX'],1)
+ +H(540,'// INK')+SEG(568,52,['00','44','66','99','CC'],0)
+ +C(640,'描边作用于所有带框部件')+C(668,'墨色只压黑字，白字/灰不动')+C(696,'波形改档要重启才换表')
+ +`<div class="a log n" style="top:760px">&gt; border = 3px  ink = 0x00</div><div class="a log" style="top:792px">&gt; wave_def = 1 (auto)</div>`
+ +`<div class="a btn">COMMIT</div>`});
+// 3 字体
+S.push({n:'03 字体 · config.font()',h:BAR()+HERO('config.','font','();','全局字号 · /sdcard/fonts')
+ +H(184,'// SIZE')+SEG(212,56,['24 <small>紧凑</small>','28 <small>默认</small>','34 <small>大字</small>'],1)
+ +`<div class="a" style="left:24px;top:292px;width:492px;border-top:1px solid #000;border-bottom:1px solid #000;padding:16px 0;font-size:28px">&gt; 墨水屏设置 ABC 123<span class="cur"></span></div>`
+ +H(384,'// FACE')
+ +LI(412,'builtin','出厂默认','on')+LI(470,'NotoSansSC-Regular.otf','4.2M')+LI(528,'LXGWWenKai.ttf','11M')+LI(586,'(empty)','','off')+LI(644,'(empty)','','off')+LI(702,'(empty)','','off')
+ +`<div class="a log n" style="top:774px">&gt; LXGWWenKai.ttf 已启用</div><div class="a log" style="top:806px">&gt; 选中即加载 · 失败保留原字体</div>`
+ +`<div class="a btn">COMMIT</div>`});
+// 4 电源
+S.push({n:'04 电源 · config.power()',h:BAR()+HERO('config.','power','();','屏保 · 休眠 · 熄屏')
+ +R(196,'SCREENSAVER','')+TG(190,true)+C(236,'久不动熄屏')
+ +R(290,'DEEP-SLEEP','')+TG(284,false)+C(330,'息屏断 WiFi 省电')
+ +H(390,'// IDLE (MIN)')+SEG(418,56,['1','5','10'],1)
+ +H(504,'// IMAGE')+LI(532,'wallpaper_01.png','→')
+ +`<div class="a warn" style="top:628px;font-size:17px;padding:10px 0">[ 恢复出厂：去主页双击 FACTORY RESET ]</div>`
+ +`<div class="a log n" style="top:720px">&gt; ss = 1  dp = 0  idle = 5</div>`
+ +`<div class="a btn">COMMIT</div>`});
+// 5 屏保
+S.push({n:'05 屏保 · config.screensaver()',h:BAR().replace('20:20','20:20')+`<div class="a hero">CONFIG / SAVER</div><div class="a sub">// 熄屏显示哪张图</div>`
+ +LI(184,'black (no image)','','on')+LI(244,'wallpaper_01.png','88K')+LI(304,'ink_tale_cover.png','120K')+LI(364,'(empty)','','off')+LI(424,'(empty)','','off')+LI(484,'(empty)','','off')+LI(544,'(empty)','','off')
+ +C(630,'16 级灰 PNG 放进 SD 的 screensaver/')+C(658,'tools/make_screensaver.py 可生成')
+ +`<div class="a log n" style="top:720px">&gt; 点一下 = 选中并预览 2 秒</div><div class="a log" style="top:752px">&gt; 改完回主页 COMMIT</div>`
+ +`<div class="a btn">COMMIT</div>`});
+// 6 关于
+S.push({n:'06 关于 · config.about()',h:BAR()+HERO('config.','about','();','固件 / 分区 / 实体')
+ +[['FIRMWARE','m5ui 1.0.0'],['PARTITION','factory 3M / fonts 3M'],['FONT','BUILTIN · 28PX'],['RESOLUTION','540 x 960'],['PANEL','8BIT EPD · 16 GRAY'],['WAVEFORM','PER-WIDGET AUTO'],['ENTITIES','132 / 256']].map((r,i)=>R(196+i*52,r[0],r[1])).join('')
+ +H(590,'// BUILD')+`<div class="a log" style="top:618px">&gt; idf.py build</div><div class="a log" style="top:648px">&gt; idf.py -p /dev/ttyACM0 flash</div>`
+ +`<div class="a log n" style="top:710px">&gt; panic = 0</div><div class="a log" style="top:740px">&gt; 墨水屏效果必须肉眼看</div>`
+ +`<div class="a warn" style="top:820px;font-size:18px">[ END OF CONFIG ]</div>`});
+document.getElementById('all').innerHTML=S.map(s=>`<div><div class="lab">${s.n}</div><div class="scr">${s.h}</div></div>`).join('');
+</script></body></html>

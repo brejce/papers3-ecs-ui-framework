@@ -1,0 +1,12 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# 16MB flash = 0x1000000
+#   0x8000   partition table（占一个 4KB 扇区，所以第一个分区必须 >= 0x9000）
+#   0x9000   nvs        24KB
+#   0xF000   phy_init   4KB
+#   0x10000  factory    3MB   ← 固件（加 WiFi + HTTP 文件管理后 1.16MB，原来的 1MB 装不下）
+#   0x310000 fonts      3MB   ← 默认字体：鸿蒙 HarmonyOS SansSC 裁切版（1.93MB / 6899 字符）
+# 合计约 6.06MB，余 ~9.94MB
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xF000,   0x1000,
+factory,  app,  factory, 0x10000,  0x300000,
+fonts,    data, 0x40,    0x310000, 0x300000,

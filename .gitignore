@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────
+# 构建产物
+build/
+build-*/
+sdkconfig.old
+*.bin
+*.elf
+*.map
+*.o
+*.obj
+*.a
+*.so
+
+# ─────────────────────────────────────────────
+# 第三方组件（用 tools/fetch_components.sh 拉，见 patches/README.md）
+#
+# ★ 为什么排除：m5gfx / m5unified / elf_loader / cmake_utilities 是第三方库
+#   （165MB / 1000+ 文件）。本地改过的部分只有 5 个文件，已经以补丁形式
+#   留在 patches/ 里（几十 KB），第三方代码本身不进仓库。
+#   ⚠️ 别删这几行 —— components/ 下的东西一旦被组件管理器重下覆盖，
+#   补丁就没了（见 main/idf_component.yml 顶部的「血泪教训」）。
+components/
+
+# stb_truetype.h：第三方单文件库（public domain），本地无改动，同样由脚本拉
+main/third_party/stb_truetype.h
+
+# ─────────────────────────────────────────────
+# 组件管理器下载的依赖（由 idf_component.yml 解析后自动生成）
+managed_components/
+dependencies.lock
+
+# ─────────────────────────────────────────────
+# 运行时数据 / 私有内容
+#
+# 书籍内容：版权方作品，不进仓库。放 books/ 下即可自动被工具读到。
+books/
+# 词库索引：由 tools/make_pinyin_index.py 生成
+pinyin.idx
+pinyin.idx.bak-*
+# 字体：版权方字库，不进仓库（见 docs/display/TTF_FONT.md 的授权说明）
+fonts/*.ttf
+
+# 测试跑出来的日志：含本机绝对路径，且能重跑生成
+apps/reader/test/big.log
+apps/reader/test/trace.txt
+apps/reader/test/build/
+
+# ─────────────────────────────────────────────
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+__pycache__/
+*.pyc
+
+# 备份文件（本项目脚本生成）
+*.bak-*

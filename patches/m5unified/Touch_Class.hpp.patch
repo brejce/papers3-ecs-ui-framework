@@ -1,0 +1,29 @@
+--- a/src/utility/Touch_Class.hpp
++++ b/src/utility/Touch_Class.hpp
+@@ -107,12 +107,25 @@
+ 
+     bool isEnabled(void) const { return _gfx; }
+ 
+-    void begin(m5gfx::LGFX_Device* gfx) { _gfx = gfx; }
++    // ★ 本项目补丁：串行化触摸 I2C 读。
++    //   M5GFX 的 Bus_I2C 和 M5Unified 的 I2C 类**都没有互斥**，而我们现在允许第二个任务
++    //   调 update()（见 main/plugin.cpp 的触摸采样任务）→ 两个任务可能同时发起 I2C 传输
++    //   （读到错坐标 / 卡总线）。锁在 begin() 里建（M5.begin() 阶段，单线程，无竞争）。
++    void initThreadSafety(void);
++    // ★ 本项目补丁：给 core1 采样任务用的**只读原始点**接口。
++    //   ⚠️ 绝不能用 update() 代替：那会推进状态机，而固件页面判按下靠 wasPressed()
++    //   （= 那一帧的 state == touch_begin，是"一帧性"的）—— 多一个任务调 update()
++    //   会把 touch_begin 提前消费掉 → 主循环那帧看到的已经是 hold → 页面完全按不动
++    //   （实测：主页直接没反应）。
++    //   本函数只做 getTouchRaw + convertRawXY，**不碰** _touch_detail/_detail_count/_last_msec。
++    std::uint_fast8_t readRawOnly(m5gfx::touch_point_t* tp, std::uint_fast8_t count);
++    void begin(m5gfx::LGFX_Device* gfx) { _gfx = gfx; initThreadSafety(); }
+     void update(std::uint32_t msec);
+     void end(void) { _gfx = nullptr; }
+ 
+   protected:
+     std::uint32_t _last_msec = 0;
++    void* _i2c_mutex = nullptr;   // ★ 本项目补丁：update() 的 I2C 段互斥（见 initThreadSafety）
+     std::int32_t _flickThresh = 8;
+     std::uint32_t _msecHold = 500;
+     m5gfx::LGFX_Device* _gfx = nullptr;

@@ -1,0 +1,20 @@
+--- a/src/esp_elf.c
++++ b/src/esp_elf.c
+@@ -655,6 +655,17 @@
+ #if CONFIG_ELF_LOADER_BUS_ADDRESS_MIRROR
+                         elf->symtab[num].addr =
+                             (void *)(elf->ptext + symtab[j].value - elf->sec[ELF_SEC_TEXT].v_addr);
++    /* ★ m5ui 本地补丁（必须保留）：符号表地址也要做 elf_remap_text。
++     *   上游只对「入口点」(本文件 338 行附近) 和「重定位」(arch/esp_elf_xtensa.c) 做了 remap，
++     *   唯独符号表这段漏了 —— 于是 dlsym() 返回 PSRAM 的**数据总线地址**(0x3cxxxxxx)，
++     *   一调用就 Guru Meditation: InstructionFetchError（PC / EXCVADDR 都在 0x3c28xxxx）。
++     *   症状：launcher 里打开任何 .so 立刻退回主页（其实是崩了重启，不是 app 自己退出）。
++     *   本组件已 vendor 到 components/elf_loader/，组件管理器不会再重下覆盖它。
++     *   若日后升级 elf_loader，先看上游是否已补这段，否则要重新打。 */
++#ifdef CONFIG_ELF_LOADER_CACHE_OFFSET
++                        elf->symtab[num].addr =
++                            (void *)elf_remap_text(elf, (uintptr_t)elf->symtab[num].addr);
++#endif
+ #else
+                         elf->symtab[num].addr =
+                             (void *)(elf->psegment + symtab[j].value - elf->svaddr);

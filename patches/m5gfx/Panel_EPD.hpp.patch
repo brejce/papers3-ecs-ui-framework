@@ -1,0 +1,82 @@
+--- a/src/lgfx/v1/platforms/esp32/Panel_EPD.hpp
++++ b/src/lgfx/v1/platforms/esp32/Panel_EPD.hpp
+@@ -67,6 +67,12 @@
+ 
+     void waitDisplay(void) override;
+     bool displayBusy(void) override;
++    // ★ 加给固件的：等波形期间要**边等边刷触摸**（见 main/plugin.cpp 的 so_wait_display）。
++    //   ⚠️ 别拿 displayBusy() 当 waitDisplay 用 —— 它查的是「更新队列满没满」，
++    //   不是「波形跑没跑完」。display() 一返回队列就是空的 → displayBusy() 立刻 false
++    //   → 循环秒退（实测推屏耗时从 873ms 变成假的 2ms，而且 .so 会在波形还在跑时改帧缓冲）。
++    //   真正该等的是下面这个 _display_busy，与 Panel_EPD::waitDisplay() 同一个条件。
++    bool isDrawing(void) const { return _display_busy; }
+     color_depth_t setColorDepth(color_depth_t depth) override;
+ 
+     void setInvert(bool invert) override;
+@@ -75,6 +81,50 @@
+ 
+     void display(uint_fast16_t x, uint_fast16_t y, uint_fast16_t w, uint_fast16_t h) override;
+ 
++    // ---- lab hook (epd_lut_lab): rebuild ONLY the flattened 2-pixel waveform table from
++    // config_detail(), so a custom waveform can be swapped at runtime. A full init() cannot
++    // be reused for this: it would re-allocate the framebuffers (leak) and spawn a second
++    // task_update task. Call it after waitDisplay(), never during an update.
++    bool reload_lut_table(void);
++    // Allocated capacity of the flattened LUT, in rows. reload_lut_table() refuses a swap whose
++    // combined step count exceeds this, so log it before blaming a waveform for a failed install.
++    size_t lut_alloc_steps(void) const { return _lut_alloc_steps; }
++
++    // ---- lab hook (epd_lut_lab): exact 4bpp region save/restore, straight out of / into _buf.
++    //
++    // Why this exists instead of readRect()+pushImage(): the panel's write path converts
++    // RGB565 -> BT.601 8-bit -> 4-bit with 4x4 ordered dithering, where the result also depends
++    // on the pixel's position. Only gray levels 0, 8 and 15 survive a read->write round trip;
++    // levels 1-7 and 9-14 each split into two neighbouring levels. So a region re-pushed through
++    // the public API comes back visibly altered (a faint speckled rectangle) - fatal for the
++    // popup "save-under and restore" pattern.
++    //
++    // These copy nibbles directly, with the same coordinate mapping _draw_pixels() uses, so a
++    // save+restore pair with identical arguments round-trips bit-exactly.
++    //   buffer layout: 4bpp packed, row stride (w+1)/2 bytes, HIGH nibble = even column index
++    //   size to allocate: region_bytes(w, h)
++    // After copy_region_in() the caller must still call display(x,y,w,h) to push it.
++    static size_t region_bytes(int32_t w, int32_t h)
++    {
++      return (size_t)((w + 1) / 2) * (size_t)h;
++    }
++    bool copy_region_out(int32_t x0, int32_t y0, int32_t w, int32_t h, uint8_t* dst);
++    bool copy_region_in (int32_t x0, int32_t y0, int32_t w, int32_t h, const uint8_t* src);
++
++    // ---- m5ui fast path: 与上面两个**逐字节等价**、只是把循环不变量提出来。
++    //
++    // 为什么快：原版每个像素都重算一遍旋转/翻转（swap + 两次条件取反），
++    // 而且每像素做一次 y*stride 乘法。实测全屏 540×960（518K 像素）要 ~199ms，
++    // 而这一整块其实**是仿射映射** —— 每行起点 + 每像素固定增量就够。
++    //
++    // ★ 等价性怎么保证的（不是"看起来一样"）：四个变换在 (i,j) 上是仿射的，
++    //   所以这里先用**与原版一模一样的表达式**算出 (i=0,j=0)、(i=1,j=0)、(i=0,j=1)
++    //   三个点，三点之差就是"每像素增量 ax/ay"和"每行增量 bx/by"。之后顺着走。
++    //   整数运算 + 仿射 ⇒ 每个像素落到的 (x,y) 与原版**逐点相同**。
++    //   （plugin.cpp 里还有一次开机自检：全屏 out 两个版本 memcmp，不等就不用快版。）
++    bool copy_region_out_fast(int32_t x0, int32_t y0, int32_t w, int32_t h, uint8_t* dst);
++    bool copy_region_in_fast (int32_t x0, int32_t y0, int32_t w, int32_t h, const uint8_t* src);
++
+     void writeFillRectPreclipped(uint_fast16_t x, uint_fast16_t y, uint_fast16_t w, uint_fast16_t h, uint32_t rawcolor) override;
+     void writeImage(uint_fast16_t x, uint_fast16_t y, uint_fast16_t w, uint_fast16_t h, pixelcopy_t* param, bool use_dma) override;
+     void writePixels(pixelcopy_t* param, uint32_t len, bool use_dma) override;
+@@ -93,6 +143,7 @@
+     void _update_transferred_rect(uint_fast16_t &xs, uint_fast16_t &ys, uint_fast16_t &xe, uint_fast16_t &ye);
+ 
+     bool init_intenal(void);
++    void build_lut_table(uint8_t* dst);
+ 
+     Bus_EPD* getBusEPD(void) { return (Bus_EPD*)_bus; }
+ 
+@@ -119,6 +170,7 @@
+     uint16_t* _step_framebuf = nullptr;
+     uint16_t* _step_table = nullptr;
+     uint8_t* _lut_2pixel = nullptr;
++    size_t _lut_alloc_steps = 0;   // allocated capacity of _lut_2pixel, in rows
+   
+     uint8_t _lut_offset_table[6] = { 0, };
+     uint8_t _lut_remain_table[6] = { 0, };

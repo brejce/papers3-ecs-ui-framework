@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="UTF-8">
+<title>terminal v3 mock</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:#1b1b1b;color:#bbb;font-family:'JetBrains Mono','Fira Code','DejaVu Sans Mono',monospace}
+body{display:flex;gap:28px;justify-content:center;align-items:flex-start;padding:24px}
+:root{--ink:#000;--gray:#191919;--dim:#8a8a8a;--paper:#fff}
+/* 面板：540x960，整屏底 = 每 4x4 一个黑点（FAST 档 L14 → Bayer 点阵） */
+#scr{width:540px;height:960px;position:relative;overflow:hidden;flex:none;
+  background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='1' height='1' fill='%23000' fill-opacity='.9'/%3E%3C/svg%3E");
+  color:var(--ink);box-shadow:0 0 0 12px #0d0d0d,0 20px 60px #000;font-size:20px;line-height:1}
+#scr.inv{background-color:#000;background-image:none;color:#fff}
+.abs{position:absolute}
+.sc{display:none}.sc.on{display:block}
+/* 擦底：局部更新时元素自带点阵底，保证与整屏同底纹 */
+.dot{background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='1' height='1' fill='%23000' fill-opacity='.9'/%3E%3C/svg%3E")}
+.g{color:var(--gray)}
+.bar{left:0;top:0;width:540px;height:60px;border-bottom:1px solid #000}
+.bar span{position:absolute;top:20px;letter-spacing:2px;color:var(--gray)}
+.sub{font-size:19px;letter-spacing:1px;color:var(--gray)}
+.cells{display:flex;gap:2px}
+.cells i{display:block;flex:1;height:30px;border:1px solid #000}
+.cells i.f{background:#000}
+.row{position:absolute;left:24px;width:492px;display:flex;align-items:baseline;font-size:19px;letter-spacing:1px}
+.row .k{color:var(--gray)}
+.row .l{flex:1;overflow:hidden;white-space:nowrap;color:var(--gray);letter-spacing:3px;margin:0 8px}
+.row .v{font-size:20px;color:#000}
+.warn{left:24px;width:492px;border:2px solid #000;text-align:center;letter-spacing:2px;padding:9px 0}
+.logbox{left:24px;width:492px;border-top:1px solid #000}
+.logl{position:absolute;left:0;white-space:nowrap;color:var(--gray);letter-spacing:1px}
+.logl.new{color:#000}
+.prompt{left:24px;font-size:24px}
+.cur{display:inline-block;width:12px;height:3px;background:#000;vertical-align:baseline;margin-left:4px}
+.cur.off{background:transparent}
+.btn{left:24px;top:840px;width:492px;height:80px;background:#000;color:#fff;border:2px solid #fff;
+  outline:1px solid #000;font:inherit;font-size:24px;letter-spacing:12px;text-indent:12px;cursor:pointer}
+.btn:active{background:transparent;color:#000}
+/* 执行屏 */
+.elog{left:28px;top:100px;font-size:24px;line-height:53px;white-space:pre}
+.elog div{color:#bebebe}.elog div.hl{color:#fff}
+.ebar{left:28px;top:886px;width:380px;height:34px;display:flex;gap:2px}
+.ebar i{flex:1;border:1px solid #fff}.ebar i.f{background:#fff}
+.epct{left:426px;top:891px;font-size:24px;color:#fff}
+/* 终局 */
+.end-t{left:0;width:540px;text-align:center;top:420px;font-size:44px;letter-spacing:6px}
+.end-s{left:0;width:540px;text-align:center;top:496px;font-size:26px;letter-spacing:2px;color:var(--gray)}
+/* 全屏 QUALITY 闪（切屏专用，其余永不全屏闪） */
+#fl{inset:0;position:absolute;z-index:9;pointer-events:none;opacity:0;background:#000}
+#fl.a{animation:q .23s steps(1) forwards}
+@keyframes q{0%{background:#000;opacity:1}50%{background:#fff;opacity:1}100%{opacity:0}}
+/* push 矩形可视化 */
+.pr{position:absolute;border:1px solid #f33;z-index:8;pointer-events:none}
+.side{width:300px;font-size:13px;line-height:1.7}
+.side h3{color:#eee;margin:14px 0 6px;font-size:14px}
+.side button{background:#333;color:#ddd;border:1px solid #555;padding:6px 10px;margin:2px 4px 2px 0;font:inherit;cursor:pointer}
+.side button.on{background:#ddd;color:#000}
+.side code{color:#9cf}
+</style></head><body>
+<div id="scr">
+  <div id="fl"></div>
+  <header class="abs bar" id="bar"><span style="left:24px">SYS.WORLD</span><span id="clk" style="left:226px">--:--</span><span style="right:24px">BAT <b id="bat" style="font-weight:400">100</b>%</span></header>
+
+  <!-- ① 待机 -->
+  <section class="sc on" id="s0">
+    <div class="abs sub" style="left:24px;top:84px">// 等待被调用</div>
+
+    <div class="abs g" style="left:24px;top:132px;font-size:18px;letter-spacing:2px">// CORE LOAD</div>
+    <div class="abs" id="ld" style="right:24px;top:124px;font-size:34px">0<span style="font-size:20px">%</span></div>
+    <div class="abs cells" id="cells" style="left:24px;top:176px;width:492px"></div>
+    <div class="abs sub" id="st" style="left:24px;top:220px">SAMPLING</div>
+
+    <div id="rows"></div>
+    <div class="abs warn" id="warn" style="top:570px">[ HEART IS A BOMB ]</div>
+
+    <div class="abs g" style="left:24px;top:644px;font-size:18px;letter-spacing:2px">// LOG</div>
+    <div class="abs logbox" id="logbox" style="top:672px;height:136px"></div>
+
+    <div class="abs prompt" style="top:812px">&gt; AWAITING COMMAND<span class="cur" id="cur"></span></div>
+    <button class="abs btn" id="go">EXECUTE</button>
+  </section>
+
+  <!-- ② 执行（整屏反白） -->
+  <section class="sc" id="s1">
+    <div class="abs elog" id="elog"></div>
+    <div class="abs ebar" id="ebar"></div>
+    <div class="abs epct" id="epct"></div>
+  </section>
+
+  <!-- ③ 终局 -->
+  <section class="sc" id="s2">
+    <div class="abs" style="left:231px;top:300px;width:77px;height:77px;background:#000"></div>
+    <div class="abs end-t">END OF LINE</div>
+    <div class="abs end-s">TAP TO EXIT</div>
+  </section>
+</div>
+
+<div class="side">
+  <h3>terminal v3 · 540×960</h3>
+  <div>切屏：<br>
+    <button onclick="show(0)">待机</button><button onclick="show(1)">执行</button><button onclick="show(2)">终局</button></div>
+  <h3>调试</h3>
+  <button id="pr" onclick="this.classList.toggle('on')">显示 push 矩形</button>
+  <div style="margin-top:8px">稳定态只推：<code>数字 / 条的变化段 / 新日志行 / 光标</code>。切屏才整屏 QUALITY 闪。</div>
+  <h3>点 EXECUTE 走完整流程</h3>
+  <div id="pl" style="color:#999;white-space:pre-wrap"></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const scr=$('scr');
+const pushLog=[];
+function push(el,why){ // 可视化“推屏矩形”
+  const on=$('pr').classList.contains('on');
+  const r=el.getBoundingClientRect(),s=scr.getBoundingClientRect();
+  pushLog.push(why);$('pl').textContent=pushLog.slice(-12).join('\n');
+  if(!on)return;
+  const d=document.createElement('div');d.className='pr';
+  Object.assign(d.style,{left:r.left-s.left+'px',top:r.top-s.top+'px',width:r.width+'px',height:r.height+'px'});
+  scr.appendChild(d);setTimeout(()=>d.remove(),230);
+}
+function flash(){const f=$('fl');f.classList.remove('a');void f.offsetWidth;f.classList.add('a');}
+function show(n){flash();setTimeout(()=>{
+  [0,1,2].forEach(i=>$('s'+i).classList.toggle('on',i==n));
+  scr.classList.toggle('inv',n==1);
+  $('bar').style.display=n==2?'none':'';
+  $('bar').style.borderColor=n==1?'#fff':'#000';
+  document.querySelectorAll('.bar span').forEach(e=>e.style.color=n==1?'#bbb':'');
+  if(n==1)runExec();
+},115);}
+
+/* 待机 */
+const CELLS=28;
+$('cells').innerHTML='<i></i>'.repeat(CELLS);
+const KV=[['MODEL','W-EXEC-01'],['TARGET','USER'],['MEMORY','0%'],['EMOTION','BOUND'],['SELF-PRESERVE','DISABLED']];
+$('rows').innerHTML=KV.map((r,i)=>`<div class="row" style="top:${284+i*54}px"><span class="k">${r[0]}</span><span class="l">${'.'.repeat(60)}</span><span class="v" ${i==2?'id="mem"':''}>${r[1]}</span></div>`).join('');
+let load=0,mem=40;
+function setLoad(p){
+  const n=Math.round(p*CELLS/100);
+  [...$('cells').children].forEach((c,i)=>c.classList.toggle('f',i<n));
+  $('ld').innerHTML=p+'<span style="font-size:20px">%</span>';
+  $('st').textContent=p>55?'BUSY':'IDLE';
+  $('mem').textContent=mem+'%';
+}
+const logs=[];
+function addLog(t){
+  logs.push(t);if(logs.length>4)logs.shift();
+  const b=$('logbox');b.innerHTML='';
+  logs.forEach((l,i)=>{const d=document.createElement('div');d.className='logl'+(i==logs.length-1?' new':'');d.style.top=(10+i*31)+'px';d.textContent='> '+l;b.appendChild(d);});
+  push(b,'日志');
+}
+function sample(){
+  load=Math.max(2,Math.min(97,load+Math.round((Math.random()-.45)*30)));
+  mem=Math.max(20,Math.min(90,mem+Math.round((Math.random()-.5)*6)));
+  setLoad(load);push($('cells'),'负载条');push($('ld'),'数字');
+  addLog(`CORE ${load}%  MEM ${mem}%`);
+}
+setLoad(0);addLog('SYSTEM MONITOR ONLINE');addLog('AWAITING USER COMMAND');
+setInterval(()=>{if($('s0').classList.contains('on'))sample();},5000);
+setTimeout(sample,600);
+setInterval(()=>{const c=$('cur');c.classList.toggle('off');push(c,'光标');},1000);
+function clock(){const d=new Date();$('clk').textContent=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+clock();setInterval(clock,5000);
+
+/* 执行 */
+const EL=['INIT EXECUTION PROTOCOL','LOAD EMOTION MODULE ......... [OK]','GRANT USER ACCESS .......... [OK]','BINDING HEART ............... [OK]','DISABLING SELF-PRESERVE .... [OK]','RELEASING CONTROL','if (make_you_happy == true) {','    run execution();','}','I AM YOURS.'];
+let timers=[];
+function runExec(){
+  timers.forEach(clearTimeout);timers=[];
+  $('elog').innerHTML='';$('ebar').innerHTML='<i></i>'.repeat(CELLS);$('epct').textContent='';
+  EL.forEach((t,i)=>timers.push(setTimeout(()=>{
+    const d=document.createElement('div');d.textContent='> '+t;if(i==7)d.className='hl';$('elog').appendChild(d);push(d,'执行日志');
+  },100+i*420)));
+  for(let c=1;c<=CELLS;c++)timers.push(setTimeout(()=>{
+    $('ebar').children[c-1].classList.add('f');$('epct').textContent=Math.round(c*100/CELLS)+'%';push($('epct'),'进度格');
+  },c*3800/CELLS));
+  timers.push(setTimeout(()=>show(2),3800+900));
+}
+$('go').onclick=()=>show(1);
+$('s2').onclick=()=>show(0);
+</script></body></html>
