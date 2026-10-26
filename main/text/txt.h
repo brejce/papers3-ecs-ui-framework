@@ -16,7 +16,7 @@
 #include "esp_heap_caps.h"
 #include "text/markdown.h"
 
-namespace m5ui::txt {
+namespace papers3::txt {
 
 // 返回块数；-1 = 内存不够
 inline int parse(char* text, size_t cap, md::Doc& d, int max_blocks = 8000) {
@@ -48,4 +48,4 @@ inline int parse(char* text, size_t cap, md::Doc& d, int max_blocks = 8000) {
     return d.n;
 }
 
-} // namespace m5ui::txt
+} // namespace papers3::txt

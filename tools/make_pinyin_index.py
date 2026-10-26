@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --quiet --with fonttools --with pypinyin
 # 生成拼音索引：
 #   main/text/pinyin_index.h —— 内置表（编进固件，SD 没卡也能用）
-#   pinyin.idx               —— 可升级词库（拷到 SD 卡 /m5ui/pinyin.idx）
+#   pinyin.idx               —— 可升级词库（拷到 SD 卡 /papers3/pinyin.idx）
 #
 #   uv run tools/make_pinyin_index.py [字体.ttf] [输出.h]
 #
@@ -84,7 +84,7 @@ def main() -> None:
     lines.append("#pragma once")
     lines.append("#include <cstdint>")
     lines.append("")
-    lines.append("namespace m5ui::ime {")
+    lines.append("namespace papers3::ime {")
     lines.append("")
     lines.append("struct PinyinEntry {")
     lines.append("    const char* pinyin;    // 无声调拼音（ü 写作 v）")
@@ -103,7 +103,7 @@ def main() -> None:
     lines.append("static const int PINYIN_INDEX_COUNT = "
                  "sizeof(PINYIN_INDEX) / sizeof(PINYIN_INDEX[0]);")
     lines.append("")
-    lines.append("} // namespace m5ui::ime")
+    lines.append("} // namespace papers3::ime")
     lines.append("")
 
     os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)
@@ -112,7 +112,7 @@ def main() -> None:
     print(f"✓ {OUT}  音节 {len(order)} 个  {os.path.getsize(OUT)/1024:.1f} KB")
 
     # ── 导出二进制索引 ──
-    # 拷到 SD 卡 /m5ui/pinyin.idx 就是**可升级词库**（结构见 main/text/pinyin_store.h）
+    # 拷到 SD 卡 /papers3/pinyin.idx 就是**可升级词库**（结构见 main/text/pinyin_store.h）
     import struct
     with open(IDX, "wb") as f:
         f.write(b"PYIX")
@@ -124,7 +124,7 @@ def main() -> None:
             f.write(b"".join(struct.pack("<H", ord(c)) for c in chars))
             f.write(b"\0" * (2 * (MAX_CAND - len(chars))))
             f.write(b"\0" * MAX_CAND)              # cnt[]：新词库的使用计数全 0
-    print(f"✓ {IDX}  {os.path.getsize(IDX)/1024:.1f} KB  → 拷到 SD 卡的 /m5ui/pinyin.idx")
+    print(f"✓ {IDX}  {os.path.getsize(IDX)/1024:.1f} KB  → 拷到 SD 卡的 /papers3/pinyin.idx")
 
     for probe in ("ni", "hao", "wo", "shi", "zhong"):
         if probe in groups:

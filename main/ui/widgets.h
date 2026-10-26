@@ -6,7 +6,7 @@
 #include "ui/theme.h"
 #include "text/ttf.h"
 
-namespace m5ui::ui {
+namespace papers3::ui {
 
 // ──────────────────────────────────────────────
 // Widget — 工厂函数集
@@ -241,12 +241,12 @@ inline void draw_toggle_face(int32_t x, int32_t y, int32_t w, int32_t h, bool on
     const uint32_t fg = on ? theme::FG_WHITE : theme::FG_BLACK;
     const uint32_t bg = on ? theme::BG_BLACK : theme::BG_WHITE;
 
-    const float keep = m5ui::ttf::size_px();
-    m5ui::ttf::set_size(22.0f);
+    const float keep = papers3::ttf::size_px();
+    papers3::ttf::set_size(22.0f);
     int32_t tw = 0, th = 0;
-    m5ui::ttf::measure(s, &tw, &th);
-    m5ui::ttf::draw_text(fx + (fw - tw) / 2, y + (h - th) / 2, s, fg, bg);
-    m5ui::ttf::set_size(keep);          // 还原（画完不还原会把后面所有实体带跑）
+    papers3::ttf::measure(s, &tw, &th);
+    papers3::ttf::draw_text(fx + (fw - tw) / 2, y + (h - th) / 2, s, fg, bg);
+    papers3::ttf::set_size(keep);          // 还原（画完不还原会把后面所有实体带跑）
 }
 
 // ── 输入框的「点一下就吊起键盘」开关 ──
@@ -366,4 +366,4 @@ inline void add_child(ecs::World& w, ecs::Entity parent, ecs::Entity child) {
 
 } // namespace widgets
 
-} // namespace m5ui::ui
+} // namespace papers3::ui

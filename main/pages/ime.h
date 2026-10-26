@@ -8,7 +8,7 @@
 //   候选栏   → ui/candidate_bar.h      （g_cand，点第 i 格回调本页 on_pick）
 // 所以本页真正的「存储」就是下面那几行句柄，别的都是接线。
 //
-// 注：命名空间叫 ime_page 而不是 ime —— 叫 ime 会把外层的 m5ui::ime 遮住。
+// 注：命名空间叫 ime_page 而不是 ime —— 叫 ime 会把外层的 papers3::ime 遮住。
 //
 // 版面（540×960）：
 //   状态栏   y=12/24       BACK + 模式（顶部，底部整块留给键盘）
@@ -29,13 +29,13 @@
 #include "ui/candidate_bar.h"
 #include "text/ime.h"
 
-namespace m5ui::pages::ime_page {
+namespace papers3::pages::ime_page {
 
-using namespace m5ui::ui;              // pages/ 在 ui/ 之外，theme:: 之类从这里找
-using namespace m5ui::ecs::components;
-using namespace m5ui::ui::widgets;
+using namespace papers3::ui;              // pages/ 在 ui/ 之外，theme:: 之类从这里找
+using namespace papers3::ecs::components;
+using namespace papers3::ui::widgets;
 using ecs::Entity;
-namespace kb = m5ui::ui::kb;
+namespace kb = papers3::ui::kb;
 
 // ── 版面常量 ──
 inline constexpr int32_t IM_TEXT_X    = 30;   // 输入框内文字起点
@@ -54,7 +54,7 @@ inline constexpr int32_t IM_KB_Y     = 752;   // 键盘首行
 // ★ 弹窗顶部那条「编辑条」（48px）：显示正在打的那一行。
 //   为什么必须有：输入框要是在屏幕下半部、被弹窗盖住，没有它就看不到自己在打什么。
 //   （iOS 的输入法就是这条。）
-inline constexpr int32_t IM_STRIP_H  = 48;
+inline constexpr int32_t IM_STRIP_H  = 54;
 inline constexpr int32_t IM_BAND_Y   = IM_CAND_Y - IM_STRIP_H;   // 620 = 覆盖层顶边
 inline constexpr int32_t IM_BAND_H   = 960 - IM_BAND_Y;          // 340
 // 编辑条右侧「×」关闭按钮（取消输入，不交文字）
@@ -70,9 +70,16 @@ inline constexpr int32_t IM_CLOSE_W  = 64;    // 476~540
 // 文字仍按 27 贴底、光标仍按 27 偏移，而实际行高 33，
 // 于是光标陷进字形的 descender 里，看着像"贴在字上"，和主页不是一回事。
 inline int32_t im_text_y() {
-    return IM_BAND_Y + (IM_STRIP_H - m5ui::ttf::line_height()) / 2;   // 编辑条里垂直居中
+    return IM_BAND_Y + (IM_STRIP_H - papers3::ttf::line_height()) / 2;   // 编辑条里垂直居中
 }
-inline int32_t im_cursor_y() { return im_text_y() + m5ui::ttf::line_height() + 2; }
+// 光标 = 设计里的 `_` 横条（12×3），位置按**实测字符量程**定：
+//   鸿蒙 Sans SC 28px：ascent 22 / descent 5（stb 截断）/ 行高 27；
+//   而 y、g 的 yMin = −244 → 真实下伸 5.8px，行盒底（652+27=679）比它短 1~2px。
+//   34px：ascent 26 / descent 7 / 行高 33，下伸 7.1px。
+// 所以光标放在「行盒底 + 3」：28px → 682（尾巴最低 680，留 2px）；34px → 685（尾巴 683，留 2px）。
+// ★ 关键是**必须落在墨迹之外**：光标每移一次都要先用白底把旧位置擦掉，
+//   一旦这条白块压在 descender 上，就会在字脚上啃出一个缺口（用户看到的就是"切脚"）。
+inline int32_t im_cursor_y() { return im_text_y() + papers3::ttf::line_height() + 3; }
 inline constexpr int32_t IM_ROW_H    = 46;    // 键高（原 128）
 inline constexpr int32_t IM_ROW_GAP  = 8;
 inline constexpr int32_t IM_KEY_GAP  = 6;
@@ -112,9 +119,15 @@ inline void refresh_cands() {
 inline void refresh_cursor_only() {
     auto& w = pages::g_ctx.app->world;
     if (auto* cr = w.get_mut<Rect>(g_cursor))
-        cr->x = IM_TEXT_X + m5ui::ttf::measure_prefix(g_ime.text, g_ime.caret)
-                         + m5ui::ttf::measure_prefix(g_ime.py, g_ime.py_len);
+        cr->x = IM_TEXT_X + papers3::ttf::measure_prefix(g_ime.text, g_ime.caret)
+                         + papers3::ttf::measure_prefix(g_ime.py, g_ime.py_len);
     w.add(g_cursor, Dirty{});
+    // ★ 这里**只动光标**，不碰文字 —— 这是输入框定下的规矩：
+    //   敲一个字 = ① 擦掉旧光标 ② 画新字（由 refresh_text(ch.from) 从变化点往后刷）
+    //   ③ 光标落到新位置。整行重画一次要 20 来个字形的 readRect+push，纯属浪费。
+    //   以前光标压在字脚里（ascent+2/+6 那几版），它那 12×3 的白底会啃掉 y/g 的下钩，
+    //   我一度改成"光标一动就整行重刷"来兜；现在光标轨道已经挪到**行盒底 +3**（墨迹之外，
+    //   见 im_cursor_y()），白块碰不到字，就不要再拿整行重画去补了。
 }
 
 // 那一行变了（正文 / 拼音 / 光标）：重建显示串 + 重画文字。
@@ -160,6 +173,16 @@ inline void on_sink_key(void*, const kb::Key& k, uint8_t mods) {
     if (k.kind == kb::K_ENTER) {              // 完成：把文字交给「打开输入法的那个页面」
         if (g_ime.py_len > 0 && g_ime.cand_n > 0) ime::commit(g_ime, 0);
         if (pages::g_ime_done) pages::g_ime_done(g_ime.text);   // 谁打开的就交给谁
+        if (pages::g_overlay_sticky) {          // 常驻键盘：不清屏、不收起，只把输入清空
+            g_ime.text[0] = 0;
+            g_ime.caret = 0;
+            g_ime.py_len = 0;
+            g_ime.py[0] = 0;
+            g_ime.cand_n = 0;
+            refresh_text(0);
+            refresh_cursor_only();
+            return;
+        }
         if (pages::g_overlay_on) pages::hide_overlay();          // 收起弹窗，留在当前页
         return;
     }
@@ -217,6 +240,9 @@ inline void on_enter_preset() {
 inline void open_as_overlay() {
     on_enter_preset();                  // 装原文 + 重建显示串 + 摆光标
     pages::show_overlay(IM_BAND_Y);     // 挂 Visible；那条带交给 flush_band 用 QUALITY 推
+    // ★ 常驻键盘（终端）不画 ×：点了只会把键盘变成"看得见、点不动"的死状态。
+    //   show_overlay() 会无条件给所有覆盖层实体挂 Visible，所以要在它之后再摘。
+    if (pages::g_overlay_sticky) pages::g_ctx.app->world.remove<Visible>(g_close);
 }
 
 // ══════════ 编辑条右侧 × 关闭按钮 ══════════
@@ -225,6 +251,11 @@ inline void open_as_overlay() {
 // 每帧由 app.h 经 g_ime_tick 调用（build() 里登记）。
 inline void tick() {
     if (!pages::g_overlay_on) return;
+    // ★ 常驻键盘（终端）没有"收起"这个语义：以前这里照收不误 → hide_overlay() 在
+    //   前台是 .so app 时只摘 Visible、不重画那条带，屏幕上键盘像素还在，但实体没了，
+    //   于是变成"键盘看得见、点不动"的死键盘（用户 2026-10-22 踩到）。
+    //   常驻模式下 × 也不画（见 open_as_overlay），这里再兜一层。
+    if (pages::g_overlay_sticky) return;
     if (M5.Touch.getCount() == 0) return;
     auto& d = M5.Touch.getDetail(0);
     if (d.wasPressed() &&
@@ -251,9 +282,12 @@ inline void build(ecs::World& w) {
     O(rect(w, 0, IM_BAND_Y + IM_STRIP_H, 540, IM_BAND_H - IM_STRIP_H, kb::KB_DOT));  // 键盘区点阵底（668-960）
     O(rect(w, 0, IM_BAND_Y, 540, 4, theme::BG_BLACK));
 
-    // ★ 编辑条里的那一行文字 + 光标：弹窗模式下必须能看见「正在打什么」。
+    // ★ 编辑条里的那一行文字 + 光标。
+    //   顺序**必须是光标在前、文字在后**（渲染按创建顺序画）：光标先把旧位置的白块擦掉，
+    //   文字紧接着整行擦+重画，把它盖住的那块补回来。反过来的话，光标的擦除块会在
+    //   字脚上留缺口（y/g/q/p 的下钩被啃掉），怎么调坐标都躲不干净。
+    g_cursor = O(cursor(w, IM_TEXT_X, im_cursor_y(), 12, 3));
     g_text   = O(input_text(w, IM_TEXT_X, im_text_y(), g_line));
-    g_cursor = O(cursor(w, IM_TEXT_X, im_cursor_y(), 18, 3));
     // 编辑条右侧「×」关闭按钮（只画字形；触摸由 tick() 自持轮询）
     g_close  = O(label(w, IM_CLOSE_X, im_text_y(), "×", 0x000000, 0xFFFFFF));
 
@@ -275,6 +309,7 @@ inline void build(ecs::World& w) {
 
     // 登记覆盖层入口：任何页都能 `pages::g_open_overlay()` 把这套键盘当弹窗吊起来
     pages::g_open_overlay = open_as_overlay;
+    pages::g_overlay_top  = IM_BAND_Y;      // 真值告诉宿主（so_ime_band_y → .so 排版用）
     // 登记 × 关闭按钮的每帧轮询（app.h 主循环经 g_ime_tick 调）
     g_ime_tick = tick;
 
@@ -295,4 +330,4 @@ inline void refresh_all() {
     refresh_mode();
 }
 
-} // namespace m5ui::pages::ime_page
+} // namespace papers3::pages::ime_page

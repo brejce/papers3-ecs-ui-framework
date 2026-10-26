@@ -29,7 +29,7 @@ inline constexpr uint8_t  GRAYD = 90;         // 禁用 / 说明小字
 inline constexpr int MQ = 1, MT = 2, MF = 3, MX = 4;   // QUALITY/TEXT/FAST/FASTEST
 
 // 字号档位（§5.1，禁止新增档位）
-inline constexpr int SZ_BAR = 20, SZ_H = 20, SZ_KEY = 19, SZ_VAL = 22, SZ_HERO = 38,
+inline constexpr int SZ_BAR = 22, SZ_H = 20, SZ_KEY = 19, SZ_VAL = 22, SZ_HERO = 38,   // SZ_BAR = 固件 sbar / 设置 app 同档
                      SZ_SEG = 21, SZ_CMT = 19, SZ_LOG = 20, SZ_BTN = 24, SZ_SUB_HINT = 20;
 
 inline void* g_font = nullptr;    // 全局唯一字体句柄（reader.cpp 初始化 / 换字体重载）

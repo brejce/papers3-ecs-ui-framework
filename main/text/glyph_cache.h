@@ -24,7 +24,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
-namespace m5ui::ttf {
+namespace papers3::ttf {
 namespace gcache {
 
 inline constexpr int    BUCKETS     = 512;          // 哈希桶数（2 的幂）
@@ -177,4 +177,4 @@ inline int     count()  { return g_n; }
 inline size_t  bytes()  { return g_bytes; }
 
 } // namespace gcache
-} // namespace m5ui::ttf
+} // namespace papers3::ttf

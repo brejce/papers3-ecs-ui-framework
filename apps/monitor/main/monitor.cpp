@@ -38,7 +38,7 @@ static const uint8_t  GRAY  = 25;            // 次要文字：再加深（110 �
 static const int MODE_QUALITY = 1, MODE_TEXT = 2, MODE_FAST = 3, MODE_FASTEST = 4;
 
 // 字号（用户 2026-10-15：原来 11~14px 太小，「怎么也得接近 20」）
-static const int SZ_BAR    = 20;   // 状态栏
+static const int SZ_BAR    = 22;   // 状态栏（与固件 sbar / 设置 app 同档：22）
 static const int SZ_TITLE  = 18;   // // CORE LOAD 这类小标题
 static const int SZ_VAL    = 20;   // 数值 / 信息面板的值 / 日志行 / 警告行
 static const int SZ_KEY    = 19;   // 键名 / 状态词 / 副提示

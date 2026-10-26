@@ -22,7 +22,7 @@
 #include "esp_timer.h"
 #include "platform/nvs.h"
 
-namespace m5ui::sound {
+namespace papers3::sound {
 
 inline uint8_t* g_wav     = nullptr;   // PSRAM 里的 WAV 原始字节（含头）
 inline int      g_wav_len = 0;
@@ -95,4 +95,4 @@ inline void test() {
     else       M5.Speaker.tone(BEEP_HZ, BEEP_MS * 4);
 }
 
-} // namespace m5ui::sound
+} // namespace papers3::sound

@@ -14,7 +14,7 @@
 #include <M5Unified.h>
 #include <cstdint>
 
-namespace m5ui::ui::icons {
+namespace papers3::ui::icons {
 
 // 实心三角箭头（候选翻页）
 inline void triangle(int32_t x, int32_t y, int32_t w, int32_t h, bool right, uint32_t fg) {
@@ -43,4 +43,4 @@ inline void backspace(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t fg, u
     M5.Display.drawLine(cx + s, cy - s, cx - s, cy + s, bg);
 }
 
-} // namespace m5ui::ui::icons
+} // namespace papers3::ui::icons

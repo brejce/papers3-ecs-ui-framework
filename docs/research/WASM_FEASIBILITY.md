@@ -1,8 +1,8 @@
-# m5ui → WASM 可行性研究（对来稿手册的事实核查）
+# papers3 → WASM 可行性研究（对来稿手册的事实核查）
 
 > 编写 2026-10-08。**方法**：不装依赖、不编译，先把来稿手册的每条硬事实回到权威源核一遍
 > （WAMR 官方仓库/文档、ESP Component Registry、独立实践者记录），再评估架构。
-> 核查对象：来稿《m5ui → WASM 架构改造手册》。
+> 核查对象：来稿《papers3 → WASM 架构改造手册》。
 > 配套：`../guide/DEVELOPER.md`（原 `ARCHITECTURE.md` 已并入其附录）、`../architecture/ECS_OPTIMIZATION.md`、`../display/EPD_TEST_MANUAL.md`。
 
 ---
@@ -17,7 +17,7 @@
 |---|---|
 | ✅ **对的** | Registry 组件 `espressif/wasm-micro-runtime v2.4.0~1` 真实存在；`wamrc --target=xtensa` 与 `wamr-compiler/build_llvm_xtensa.sh` **真实存在**；**`LIB_PTHREAD` 默认开启会让 `create_exec_env` 失败** 的坑**真实**（有独立实践者复现） |
 | ❌ **核心前提错** | "关闭解释器、只用 AOT" 这条在 ESP32 上**默认加载就失败**：`AOT module load failed: mmap memory failed`。**必须先走 XIP 模式**（`wamrc --xip`）—— 手册**完全没提 XIP**，所以 §11 Phase 4"切换到 .aot"照做会失败 |
-| ⚠️ **前提要改** | 手册的分区表与 m5ui 现状不符（m5ui 现在**没有 `otadata`**；`fonts` 是 **subtype 0x40 自定义**）；改分区表意味着**必须全量 `erase-flash`** → 清掉 NVS 设置、字体分区要重烧 |
+| ⚠️ **前提要改** | 手册的分区表与 papers3 现状不符（papers3 现在**没有 `otadata`**；`fonts` 是 **subtype 0x40 自定义**）；改分区表意味着**必须全量 `erase-flash`** → 清掉 NVS 设置、字体分区要重烧 |
 
 ### ⚠️ 修订（2026-10-08 晚）：这一节的结论被推翻，见 §八
 
@@ -46,10 +46,10 @@
 | 5 | "AOT 比解释器快 10–50 倍，**必须使用 AOT**" | **⚠️ 倍率同量级但偏高**：WAMR 官方性能表是 **8.8×~22×**（matrix 22.02 / gimli 9.94 / CoreMark 8.79） | WAMR wiki: Performance |
 | 6 | native 签名规则 `i/I/f/F/$/*/~` | ✅ 与 WAMR 的 `doc/export_native_api.md` 一致 | 官方文档 |
 | 7 | Rust wasm 默认 1MB 栈要压到 8KB | ✅ 合理（wasm32-unknown-unknown 的默认栈确实过大） | 通用已知问题 |
-| 8 | 分区表（含 `otadata`、`fonts` 用 spiffs、`wasm_apps` 6M） | **⚠️ 与现状不符**，见 §六 | m5ui 的 `partitions.csv` |
-| 9 | "WASM 创建的 Entity 进同一个 World，`flex_layout/handle_touch/render` **完全不需要修改**" | **❌ 不成立**，见 §五 | m5ui 的组件定义 |
+| 8 | 分区表（含 `otadata`、`fonts` 用 spiffs、`wasm_apps` 6M） | **⚠️ 与现状不符**，见 §六 | papers3 的 `partitions.csv` |
+| 9 | "WASM 创建的 Entity 进同一个 World，`flex_layout/handle_touch/render` **完全不需要修改**" | **❌ 不成立**，见 §五 | papers3 的组件定义 |
 | 10 | 边界调用 ~15.8µs / 2.5~3.7µs | 量级合理（**解释器模式**） | 与 WAMR 社区的实测数量级一致 |
-| 11 | 示例 `widgets::rect(*g_world, x, y, w, h, **(uint16_t)color**)` | **❌ 颜色会错**：m5ui 的 `ui/theme.h` 用 **24bit RGB888**（`0xFFFFFF/0x000000/0x555555`），`render.h` 直接喂 LGFX 的 `uint32_t`。截成 16bit → **白色不是白** | `ui/theme.h`、`systems/render.h` |
+| 11 | 示例 `widgets::rect(*g_world, x, y, w, h, **(uint16_t)color**)` | **❌ 颜色会错**：papers3 的 `ui/theme.h` 用 **24bit RGB888**（`0xFFFFFF/0x000000/0x555555`），`render.h` 直接喂 LGFX 的 `uint32_t`。截成 16bit → **白色不是白** | `ui/theme.h`、`systems/render.h` |
 | 12 | §3.3「边界检查是宿主责任……长度不会自动校验」 | **❌ 反了**：`$`/`*`/`~` 由**运行时自动做地址转换 + 边界检查**。只有改用 `'i'` 自己传指针时才需手动 `wasm_runtime_validate_app_addr` + `wasm_runtime_addr_app_to_native` | WAMR `doc/export_native_api.md` |
 | 13 | 「`idf: ">=5.1"`」 | ✅ 与组件 `idf_component.yml` 一致 | 同上 |
 | 14 | 默认 target | ⚠️ 官方 IDF 示例默认 target 是 **esp32c3**，不是 S3（要自己 `set-target`） | 示例 README |
@@ -72,7 +72,7 @@ E (356) wamr: Error in wasm_runtime_load: AOT module load failed: mmap memory fa
 **机理（已对源码核实）**：WAMR 申请 AOT 代码内存时用 `MMAP_PROT_EXEC`，
 落到 ESP-IDF 平台层就是 `heap_caps_malloc(MALLOC_CAP_EXEC)`
 —— **只能从内部 RAM 分配，不能用 PSRAM**。而 ESP32-S3 的**内部 RAM 只有 512KB**，
-m5ui 自己已经占掉 ~97KB 静态 + 运行时堆栈帧缓冲。
+papers3 自己已经占掉 ~97KB 静态 + 运行时堆栈帧缓冲。
 （PSRAM 镜像有开关 `WASM_MEM_DUAL_BUS_MIRROR`，但它由 `CONFIG_ESP32S3_SPIRAM_SUPPORT`
 这个 **IDF 4 时代的旧名**控制，在 IDF 5.x 上是否生效需要实测。）
 
@@ -161,10 +161,10 @@ ESP32-S3 **有 FPU**，所以 `fp.common`/`fpxint` 不必加；但 **i64 运算*
 
 ---
 
-## 四、⚠️ 架构冲突：m5ui 现在的三个设计与 WASM 直接打架
+## 四、⚠️ 架构冲突：papers3 现在的三个设计与 WASM 直接打架
 
 手册说"现有的 flex_layout / handle_touch / render 系统**完全不需要修改**"——
-**这句话在 m5ui 里不成立**，因为组件里存的是**裸 C++ 指针**：
+**这句话在 papers3 里不成立**，因为组件里存的是**裸 C++ 指针**：
 
 ```cpp
 struct Text        { const char* str = ""; };                    // ← 裸指针
@@ -187,7 +187,7 @@ WASM 传字符串时那个 `char*` 指向 **WASM 线性内存**。若宿主直�
 
 ### 冲突 2：`CustomDraw` 是**渲染期回调** → 跨边界调用频率被打破
 
-`render.h` 每个脏实体渲染时调 `cd->fn(...)`。而 m5ui 的关键页面**重度依赖它**：
+`render.h` 每个脏实体渲染时调 `cd->fn(...)`。而 papers3 的关键页面**重度依赖它**：
 
 - 屏上键盘的图标（Backspace / Enter / Shift 箭头）
 - 设置页大标题（临时改字号）
@@ -198,7 +198,7 @@ WASM 页面不可能提供一个原生函数指针。于是只有两条出路，
 - 或者给 WASM 提供一组**命名绘图原语**（draw_line / draw_glyph…）—— 那 WASM 就要管像素级绘制
 
 **而这两条都正好撞在手册自己划的红线上**："不要在 WASM 中逐像素操作"、
-"边界调用频率控制在每帧几次以内"。**手册的这条约束与 m5ui 的渲染模型是矛盾的。**
+"边界调用频率控制在每帧几次以内"。**手册的这条约束与 papers3 的渲染模型是矛盾的。**
 
 ### 冲突 3：`on_enter` 是 C++ lambda，跨不了边界
 
@@ -208,9 +208,9 @@ WASM 页面不可能提供一个原生函数指针。于是只有两条出路，
 
 ---
 
-## 五、分区表：要按 m5ui 现状重写（并认清代价）
+## 五、分区表：要按 papers3 现状重写（并认清代价）
 
-m5ui 现状（`partitions.csv`）：
+papers3 现状（`partitions.csv`）：
 
 ```
 nvs,      data, nvs,     0x9000,   0x6000
@@ -256,7 +256,7 @@ fonts,    data, 0x40,    0x310000, 0x300000     # ← 自定义 subtype 0x40
 3. **通道现成（已核实）**：`platform/web_files.h` 就是**网页版的 SD 卡文件管理**
    （`<title>SD</title>` / 「SD 卡」目录列表 / 支持删除）→ 往 SD 卡丢一个 `.page` 文件即可。
    配合 SD 上的**断线重载**或热重载，**不碰固件、不碰分区表**。
-   （注：m5ui **没有** SPIFFS/LittleFS 分区，`fonts` 是独立只读分区、`web_files` 走 SD。）
+   （注：papers3 **没有** SPIFFS/LittleFS 分区，`fonts` 是独立只读分区、`web_files` 走 SD。）
 4. 验收：改一个 `.page` 文件 → 页面变化，固件与分区表**一个字节没动**。
 
 **局限要认**：页面里不能有任意逻辑（循环、算法）。对 UI 页面通常够；
@@ -328,9 +328,9 @@ fonts,    data, 0x40,    0x310000, 0x300000     # ← 自定义 subtype 0x40
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
-| 2026-10-08 | v1.0 | 首版。对来稿 WASM 手册的事实核查、AOT/XIP 真实状态、两路线成本对照、m5ui 的三个架构冲突、分区表差异 |
+| 2026-10-08 | v1.0 | 首版。对来稿 WASM 手册的事实核查、AOT/XIP 真实状态、两路线成本对照、papers3 的三个架构冲突、分区表差异 |
 | 2026-10-08 | v2.0 | **推翻初版的核心建议**。用户指出"数据格式不能加能力"，成立。新增 §八：三条路（数据格式 / **elf_loader 原生 .so** / WASM / OTA）的能力上限与"API 面厚度"对照；核实 `espressif/elf_loader` v1.3.3 支持 S3 + PSRAM + `symbol.py` 生成符号表。**新的推荐 = 原生 .so** |
-| 2026-10-08 | v1.1 | 补三条已核对事实：① 示例 `(uint16_t)color` 与 m5ui 的 **24bit** 配色冲突 ② `$` 签名**自带**边界检查（手册说反） ③ 官方示例默认 target 是 c3。补 AOT 失败机理（`MALLOC_CAP_EXEC` 只能内部 RAM）+ XIP 恢复步骤（§2.3） |
+| 2026-10-08 | v1.1 | 补三条已核对事实：① 示例 `(uint16_t)color` 与 papers3 的 **24bit** 配色冲突 ② `$` 签名**自带**边界检查（手册说反） ③ 官方示例默认 target 是 c3。补 AOT 失败机理（`MALLOC_CAP_EXEC` 只能内部 RAM）+ XIP 恢复步骤（§2.3） |
 
 ---
 
@@ -349,4 +349,4 @@ fonts,    data, 0x40,    0x310000, 0x300000     # ← 自定义 subtype 0x40
 | AOT 只从内部 RAM 申请可执行内存 | `core/shared/platform/esp-idf/espidf_memmap.c`（`MALLOC_CAP_EXEC`） |
 | Kconfig 默认值（AOT/INTERP/LIB_PTHREAD/WASI/APP_FRAMEWORK 全 y；无 BOUND_CHECK） | `build-scripts/esp-idf/wamr/Kconfig` |
 | `aot_reloc_xtensa.c` 存在 | `core/iwasm/aot/arch/` |
-| m5ui 配色是 24bit RGB888 | `main/ui/theme.h`、`main/systems/render.h` |
+| papers3 配色是 24bit RGB888 | `main/ui/theme.h`、`main/systems/render.h` |

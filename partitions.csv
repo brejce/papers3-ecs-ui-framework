@@ -4,7 +4,7 @@
 #   0x9000   nvs        24KB
 #   0xF000   phy_init   4KB
 #   0x10000  factory    3MB   ← 固件（加 WiFi + HTTP 文件管理后 1.16MB，原来的 1MB 装不下）
-#   0x310000 fonts      3MB   ← 默认字体：鸿蒙 HarmonyOS SansSC 裁切版（1.93MB / 6899 字符）
+#   0x310000 fonts      3MB   ← 默认字体：Maple Mono 裁切子集（GB2312 一级 3755 + 30 个拼音补字，≈2.23MB）
 # 合计约 6.06MB，余 ~9.94MB
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xF000,   0x1000,

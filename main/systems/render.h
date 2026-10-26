@@ -3,11 +3,12 @@
 #include "ecs/world.hpp"
 #include "ecs/components.h"
 #include <M5Unified.h>
+#include <esp_timer.h>
 #include "text/ttf.h"
 #include "platform/nvs.h"      // 读全局字号（没带 FontSize 的部件按它走）
 #include "systems/epd_lut.h"   // 全局波形档（换表 + 强制档）
 
-namespace m5ui::systems {
+namespace papers3::systems {
 
 // ──────────────────────────────────────────────
 // render_system — 把「脏了」的实体画到墨水屏
@@ -58,6 +59,12 @@ inline void apply_epd_mode(uint8_t mode) {
 // ── 「带」(band)：覆盖层开/关时要整条重推的那块区域 ──
 // 覆盖层（弹窗）用 QUALITY 一次推完那一条带；带内的实体这一趟**不许各自推屏**，
 // 否则就是"弱波形先推一遍、强波形再推一遍"——既慢，中间还会留下可见的中间态。
+// ★ 性能探针（临时）：一帧推了几次屏、推屏累计花了多久。谁慢了一眼能看见。
+inline uint32_t g_push_n  = 0;
+inline int64_t  g_push_us = 0;
+inline int64_t  g_push_px = 0;          // 推过的像素数（看"谁把整屏推了一遍"）
+inline int64_t  g_trace_until = 0;      // 这个时刻之前，每帧都打日志（排查退出/切页耗时）
+
 inline int32_t g_band_y = -1, g_band_h = 0;
 inline void  band_begin(int32_t y, int32_t h) { g_band_y = y; g_band_h = h; }
 inline bool  band_intersects(int32_t y, int32_t h) {
@@ -69,8 +76,13 @@ inline bool  band_intersects(int32_t y, int32_t h) {
 inline void epd_push(int32_t x, int32_t y, int32_t w, int32_t h) {
     if (w <= 0 || h <= 0) return;
     if (band_intersects(y, h)) return;      // 带内 → 交给 pages::flush_band()
+    const int64_t t0 = esp_timer_get_time();
     M5.Display.display(x, y, w, h);
+    g_push_n++;
+    g_push_px += (int64_t)w * h;
+    g_push_us += esp_timer_get_time() - t0;
 }
+
 
 // 位图落帧缓冲：1bpp / 4bpp 灰度 → 8bit 扫描线 → pushImage
 // ★ 1bpp 的 0 位是**透明**（保留底层像素）—— 这样图标能直接坐在点阵底上，
@@ -78,9 +90,11 @@ inline void epd_push(int32_t x, int32_t y, int32_t w, int32_t h) {
 inline void draw_bitmap(int32_t x, int32_t y, const ecs::components::Bitmap& bm) {
     if (!bm.data || bm.w <= 0 || bm.h <= 0) return;
     const int w = bm.w, h = bm.h;
-    if (w > 128) return;                        // 行缓冲上限
+    const int S = (bm.scale >= 1) ? bm.scale : 1;   // 整数倍放大（最近邻）
+    if (w * S > 128) return;                        // 行缓冲上限
     const int stride = (w * bm.bpp + 7) / 8;
     uint8_t line[128];
+    uint8_t big[128];
     M5.Display.startWrite();
     for (int row = 0; row < h; ++row) {
         const uint8_t* src = bm.data + row * stride;
@@ -88,7 +102,7 @@ inline void draw_bitmap(int32_t x, int32_t y, const ecs::components::Bitmap& bm)
             // 读回底层（灰度），量化到「二次量化不变的固定点」，再把 1 位压成墨
             lgfx::v1::pixelcopy_t pc(nullptr, lgfx::v1::grayscale_t::depth,
                                      lgfx::v1::grayscale_t::depth, false, nullptr);
-            M5.Display.getPanel()->readRect(x, y + row, w, 1, line, &pc);
+            M5.Display.getPanel()->readRect(x, y + row * S, w, 1, line, &pc);
             int c = 0;
             while (c < w) {
                 while (c < w && ((src[c >> 3] >> (7 - (c & 7))) & 1) == 0) {
@@ -107,7 +121,14 @@ inline void draw_bitmap(int32_t x, int32_t y, const ecs::components::Bitmap& bm)
                 line[c] = (uint8_t)(v * 17);
             }
         }
-        M5.Display.pushImage(x, y + row, w, 1, (const lgfx::grayscale_t*)line);
+        if (S > 1) {
+            for (int c = 0; c < w; ++c)
+                for (int k = 0; k < S; ++k) big[c * S + k] = line[c];
+            for (int k = 0; k < S; ++k)
+                M5.Display.pushImage(x, y + row * S + k, w * S, 1, (const lgfx::grayscale_t*)big);
+        } else {
+            M5.Display.pushImage(x, y + row, w, 1, (const lgfx::grayscale_t*)line);
+        }
     }
     M5.Display.endWrite();
 }
@@ -126,9 +147,12 @@ inline void render(ecs::World& w) {
         auto* t = w.get<Text>(e);
         const bool has_text = (t && t->str && t->str[0]);
 
-        // ── 光标：独立刷新，擦旧画新，FASTEST 波形 ──
+        // ── 光标：独立刷新，擦旧画新 ──
+        //   ★ 必须走 GC13（mode 1），不能 DU4：拼音/英文一个字一个字敲，
+        //     编辑条那条 48px 高的小带每键推一次，DU4 不清残留电荷 ——
+        //     敲几十下之后那一行的旧字形就"烧"在屏上了（实测：键盘上方文字固化）。
         if (auto* cur = w.get_mut<Cursor>(e)) {
-            apply_epd_mode(4);   // FASTEST/DU4
+            apply_epd_mode(1);   // GC13：小矩形，代价可接受；残影不再累积
             M5.Display.startWrite();
             if (cur->drawn) {
                 M5.Display.fillRect(cur->px, cur->py, r->w, r->h, s->bg);   // 擦旧光标
@@ -166,7 +190,11 @@ inline void render(ecs::World& w) {
             const uint32_t ink_eff = (s->fg == 0x000000) ? cfg::g_cfg.ink : s->fg;
             int32_t act_l = 0, act_r = 0;
             if (has_text && ttf::loaded()) ttf::measure_extent(t->str, &act_l, &act_r);
-            int32_t th = ttf::loaded() ? ttf::line_height() : 0;
+            // ★ 擦除/推屏高度 = 行高 **+2**：`line_height()` 是 ascent + descent，而 stb 把
+            //   descent 截断取整（鸿蒙 28px：ascent 22 + descent 5 = 27），可 y/g/q/p 的
+            //   真实下伸是 5.8px —— 行盒底只到 r->y+26，尾巴最后 1~2 行像素**没人擦**，
+            //   文字变短/位移时就会留下字脚残影，光标那一小条白底也正好压在这两行上。
+            int32_t th = ttf::loaded() ? ttf::line_height() + 2 : 0;
 
             int32_t from = 0;
             if (auto* dr = w.get<TextDirtyRange>(e)) from = dr->from_char;
@@ -321,4 +349,4 @@ inline void render(ecs::World& w) {
     if (ttf::size_px() != (float)cfg::g_cfg.size) ttf::set_size((float)cfg::g_cfg.size);
 }
 
-} // namespace m5ui::systems
+} // namespace papers3::systems

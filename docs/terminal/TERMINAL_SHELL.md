@@ -40,7 +40,7 @@
 └───────────────────────────────────┬─────────────────────────────────────────┘
                                     │  一次一条：int so_sh_exec(line, out, cap)
 ┌───────────────────────────────────▼─────────────────────────────────────────┐
-│  固件 main/platform/sh.h  namespace m5ui::sh                                │
+│  固件 main/platform/sh.h  namespace papers3::sh                                │
 │  ・虚拟 cwd + 路径夹取（只能在 /sdcard 里）                                 │
 │  ・命令分派（表驱动：名字 / 最小参数 / 权限标记 / 帮助一行）                │
 │  ・有完全的文件系统与 IDF 能力：dirent/stat/remove/rename/mkdirfs/          │
@@ -182,7 +182,7 @@ int so_sh_exec(const char* line, char* out, int cap, int* code, int* flags);
 
 ```
  0  ┌ < EXIT                 12:31        BAT 87% ┐  60，底 1px 线
-64  │ m5ui terminal · v1                            │
+64  │ papers3 terminal · v1                            │
     │ 输入 help 看命令，点最下面那行开始敲           │
     │ > ls /apps                                     │
     │ apps/  reader.so  61888                        │

@@ -1,0 +1,73 @@
+{
+  "_note": [
+    "第三方组件锁定清单 —— 仓库里唯一记录「用的是哪些版本」的文件（凸版钉死）。",
+    "改版本：只改这里的 version，然后 ./tools/fetch_components.sh --force，再按 patches/README.md 重生成补丁。",
+    "本文件由人维护、被 tools/fetch_components.sh 读取与校验；patch 的 sha256 对不上会直接报错，",
+    "因为补丁必须打在**对应版本**的上游源码上，版本一漂就静默打歪。"
+  ],
+  "registry": "https://components-file.espressif.com/components",
+  "components": [
+    {
+      "name": "m5gfx",
+      "namespace": "m5stack",
+      "version": "0.2.29",
+      "license": "MIT",
+      "patches": [
+        {"path": "patches/m5gfx/Panel_EPD.cpp.patch", "sha256": "9ca2aa241dea46cd457ed53cdbeee28c157da864492265973149457ebc0210cf",
+         "touches": ["src/lgfx/v1/platforms/esp32/Panel_EPD.cpp"]},
+        {"path": "patches/m5gfx/Panel_EPD.hpp.patch", "sha256": "8fd711f145f71b92d48dea173b696221a44166668df8c8a10c418487dd1a07af",
+         "touches": ["src/lgfx/v1/platforms/esp32/Panel_EPD.hpp"]}
+      ]
+    },
+    {
+      "name": "m5unified",
+      "namespace": "m5stack",
+      "version": "0.2.22",
+      "license": "MIT",
+      "patches": [
+        {"path": "patches/m5unified/Touch_Class.cpp.patch", "sha256": "0db96f378e395ea487f31d3aa158e1c46d5c4c1d7edc29d1b063cf1346096188",
+         "touches": ["src/utility/Touch_Class.cpp"]},
+        {"path": "patches/m5unified/Touch_Class.hpp.patch", "sha256": "d788c04f0f648e6520b0c988fbe56b47801b509aa4893436695752a6a5c22a7c",
+         "touches": ["src/utility/Touch_Class.hpp"]}
+      ]
+    },
+    {
+      "name": "elf_loader",
+      "namespace": "espressif",
+      "version": "1.3.3",
+      "license": "Apache-2.0",
+      "patches": [
+        {"path": "patches/elf_loader/esp_elf.c.patch", "sha256": "03ab2cc5f7bafa3e289b7dcac4d21574b5b5f4826ddbb92eb7f417c364789b49",
+         "touches": ["src/esp_elf.c"]}
+      ]
+    },
+    {
+      "name": "cmake_utilities",
+      "namespace": "espressif",
+      "version": "0.5.3",
+      "license": "Apache-2.0",
+      "patches": [],
+      "_prune_note": "只给构建期用（elf_loader 的依赖链），test_apps/ 是上游自测工程，占地方且不参与构建 —— 装完直接删，和本机原来那份保持一致。",
+      "prune": ["test_apps/"]
+    }
+  ],
+  "git_sources": [
+    {
+      "name": "stb_truetype",
+      "version": "v1.26",
+      "repo": "https://github.com/nothings/stb",
+      "commit": "6e9f34d5429cf16790ec43c9bac3f1ee4ad1f760",
+      "url": "https://codeload.github.com/nothings/stb/tar.gz/6e9f34d5429cf16790ec43c9bac3f1ee4ad1f760",
+      "dest": "main/third_party/stb_truetype.h",
+      "member": "stb_truetype.h",
+      "marker": "stb_truetype.h - v1.26",
+      "license": "public domain / MIT（双许可）"
+    }
+  ],
+  "_not_vendored_note": [
+    "components/freetype 里有一份 FreeType 2.13.3（上游 VER-2-13-3，ftoption.h 有 3 处 papers3 改动）。",
+    "它**不在**上面两份清单里，因为当前固件根本没引用它（papers3.elf 里没有 FT_ 符号，grep main/ apps/ 也无 include）。",
+    "想彻底减负：rm -rf components/freetype（8.6MB，不进 git，删了不影响构建）。",
+    "哪天要真用它：按 freetype 的 VER-2-13-3 tag 自己 vendor 一份，并把 ftoption.h 的三处改动做成 patches/freetype/*.patch 加进本文件。"
+  ]
+}

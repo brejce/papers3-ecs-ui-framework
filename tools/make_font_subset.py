@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --quiet --with fonttools
-# 裁剪 TTF 字体子集 —— 给 m5ui 的 flash fonts 分区用
+# 裁剪 TTF 字体子集 —— 给 papers3 的 flash fonts 分区用
 #
 #   uv run tools/make_font_subset.py
 #

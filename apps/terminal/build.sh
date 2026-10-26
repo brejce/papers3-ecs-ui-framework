@@ -39,7 +39,7 @@ so_font_has so_font_ink_bounds so_font_text_ink \
 so_battery_level so_is_charging so_cpu_load so_mem_used_pct so_mem_size_kb so_mem_free_kb \
 so_clock_hhmm so_clock_valid \
 so_fill_rect so_set_epd_mode so_display \
-so_sh_exec so_ime_open so_wait_display so_fb_save so_fb_restore so_touch so_now_ms so_log so_log_file so_exit \
+so_sh_exec so_ime_open so_ime_set_sticky so_ime_band_y so_bar_set so_wait_display so_fb_save so_fb_restore so_touch so_now_ms so_log so_log_file so_exit \
 memset memcpy strlen strcmp strchr strrchr strtol strtod strtol strcspn strncat strerror \
 puts putchar fputc fputs printf vfprintf fprintf fwrite \
 usleep sleep exit close malloc calloc realloc free clock_gettime strftime \

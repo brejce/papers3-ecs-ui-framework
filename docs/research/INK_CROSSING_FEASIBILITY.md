@@ -1,6 +1,6 @@
 # 《墨森物语》(Ink Crossing) 前置研究 — 距离实现差什么
 
-> 编写 2026-10-10。方法：对来稿手册的硬件/架构声明逐条核对 M5PaperS3 官方规格 + m5ui 现有源码，
+> 编写 2026-10-10。方法：对来稿手册的硬件/架构声明逐条核对 M5PaperS3 官方规格 + papers3 现有源码，
 > 再列「距离实现还缺什么」的缺口清单。**暂不实现**，本文件是前置研究。
 > 游戏是长期目标，先搞清路怎么走、坑在哪，不写一行游戏代码。
 
@@ -12,12 +12,12 @@
 但有 **1 处关键技术错误**、**1 处致命遗漏**，以及若干需修正的数字。
 
 - ❌ **8080 并口直驱** → 错。实际是 **LCD_CAM 直驱 EPD**（M5GFX `Panel_EPD`），不是 I80/8080 总线。
-- ❌ **FreeType 字符光栅化** → 错。m5ui 用 **stb_truetype**（`third_party/stb_truetype.h`，只认 glyf 不认 CFF）。
-- ⚠️ **"m5game 给每个游戏对象挂 ECS 实体"** → 撞 m5ui 的 **256 实体累计硬上限**，手册完全没提，见 §三。
+- ❌ **FreeType 字符光栅化** → 错。papers3 用 **stb_truetype**（`third_party/stb_truetype.h`，只认 glyf 不认 CFF）。
+- ⚠️ **"m5game 给每个游戏对象挂 ECS 实体"** → 撞 papers3 的 **256 实体累计硬上限**，手册完全没提，见 §三。
 - ⚠️ 帧率数字（30Hz 逻辑 / 15Hz 渲染）→ 与墨水屏"每 10 秒刷一次"的烧屏警告冲突，见 §四。
 
 **手册做对的部分**（会拿去做，不是只挑错）：I2C 互斥锁、陀螺仪滤波+死区、熔断清理、屏幕寿命保护、
-多缓冲显存、SD 流式加载、存档 JSON —— 这些都对，且方向就是 m5ui 已验证过的思路。
+多缓冲显存、SD 流式加载、存档 JSON —— 这些都对，且方向就是 papers3 已验证过的思路。
 
 ---
 
@@ -40,7 +40,7 @@
 
 - M5PaperS3 的 EPD 面板（EPD_ED047TC1）由 ESP32-S3 的 **LCD_CAM 外设直接驱动**，
   走的是 EPD 自己的并行数据时序，**不是** ESP-IDF 里的 I80/8080 总线（`esp_lcd_new_i80_bus`）。
-- m5ui 现状走的是 **M5GFX 的 `Panel_EPD`**（`main/systems/render.h:21` 注释明确写了「M5PaperS3 / Panel_EPD 实测耗时」）。
+- papers3 现状走的是 **M5GFX 的 `Panel_EPD`**（`main/systems/render.h:21` 注释明确写了「M5PaperS3 / Panel_EPD 实测耗时」）。
 - 手册把「并行数据线」和「8080 协议」混为一谈。8080 是 Intel 总线的握手协议；EPD 直驱是另一套波形时序。
 
 **为什么这条重要**：手册 §3.3 的「DMA 双缓冲混合刷新」能不能做，取决于 LCD_CAM + DMA 这条链。
@@ -49,27 +49,27 @@
 - 开源项目 **EPD_Painter**（github.com/tonywestonuk/EPD_Painter）专为 M5PaperS3 写了
   「绕过 `esp_lcd_panel_io_i80`、直接驱动 LCD_CAM」的高性能 EPD 驱动，配合
   ESP32-S3 SIMD 汇编 + delta 更新（只推变化像素）+ 双核流水线，做到 **~20fps 等效更新率**（FAST 模式，2bpp 4 级灰）。
-- 这**恰好验证了手册 §3.3 混合刷新管线的可行性**——但它是一个独立 Arduino 库，要移植到 ESP-IDF + m5ui，是笔工程账，不是"接一下"。
+- 这**恰好验证了手册 §3.3 混合刷新管线的可行性**——但它是一个独立 Arduino 库，要移植到 ESP-IDF + papers3，是笔工程账，不是"接一下"。
 
 ---
 
 ## 二、字体栈：FreeType → stb_truetype
 
-手册 §5.1「Glyph Cache 1.5MB，FreeType 字符光栅化 LRU 缓存」——**m5ui 不用 FreeType**。
+手册 §5.1「Glyph Cache 1.5MB，FreeType 字符光栅化 LRU 缓存」——**papers3 不用 FreeType**。
 
-- m5ui 用 **stb_truetype**（`third_party/stb_truetype.h`），单文件纯 C，**只认 glyf 轮廓，不认 CFF/TTC**。
+- papers3 用 **stb_truetype**（`third_party/stb_truetype.h`），单文件纯 C，**只认 glyf 轮廓，不认 CFF/TTC**。
 - 现成的字形缓存模型：flash mmap 零拷贝加载字体（≈0 RAM），SD 字体读 PSRAM，字形栅格化在内部 RAM 临时分配。
-- 手册说的「8.48MB TTF 字体 mmap」**待核实**：m5ui 现在用的鸿蒙裁切版是 **1.93MB**。8.48MB 若是完整中文字库，
+- 手册说的「8.48MB TTF 字体 mmap」**待核实**：papers3 现在用的鸿蒙裁切版是 **1.93MB**。8.48MB 若是完整中文字库，
   得确认 flash 分区（`0x310000 fonts 3MB`）装不装得下、要不要扩分区 + 重烧。
 
-**结论**：游戏若需要字体渲染，直接用 m5ui 的 ttf.h 栈，不需要引入 FreeType。Glyph LRU 缓存可以后加，但
+**结论**：游戏若需要字体渲染，直接用 papers3 的 ttf.h 栈，不需要引入 FreeType。Glyph LRU 缓存可以后加，但
 用 stb_truetype 的 rasterize 包装，不是 FreeType 生态的东西。
 
 ---
 
-## 三、致命遗漏：m5ui 的 ECS 实体/组件上限，手册没提
+## 三、致命遗漏：papers3 的 ECS 实体/组件上限，手册没提
 
-手册 §3.2 要「m5game 给游戏对象挂 ECS 实体」（Transform / Sprite / GridPos…）。**这在 m5ui 里会直接撞墙**：
+手册 §3.2 要「m5game 给游戏对象挂 ECS 实体」（Transform / Sprite / GridPos…）。**这在 papers3 里会直接撞墙**：
 
 | 约束 | 现状 | 对游戏的含义 |
 |---|---|---|
@@ -79,7 +79,7 @@
 
 **这个约束决定游戏引擎的架构，不是"注意一下"级别的细节。**
 
-**解法（m5ui 里已有先例）**：键盘重构已经把「海量内容」从 ECS 摘出去了——35 键 → **1 个容器实体自持**，
+**解法（papers3 里已有先例）**：键盘重构已经把「海量内容」从 ECS 摘出去了——35 键 → **1 个容器实体自持**，
 键数据全在 `Keyboard` 结构里，绘制走 CustomDraw 自绘、触摸走 `tick()` 自轮询。
 
 游戏应该照抄这个模式：
@@ -101,14 +101,14 @@
 
 实际情况：
 
-- EPD 全屏刷新（GC16/QUALITY）一次 **780ms**（m5ui 实测，`render.h:21`），最快也只能 ~1.3Hz 全屏。
-- FAST 局部刷新（DU）234ms、FASTEST（DU4）171ms —— 局部小块可以到几 Hz，但连刷会撕裂（m5ui `render.h:25` 注释）。
+- EPD 全屏刷新（GC16/QUALITY）一次 **780ms**（papers3 实测，`render.h:21`），最快也只能 ~1.3Hz 全屏。
+- FAST 局部刷新（DU）234ms、FASTEST（DU4）171ms —— 局部小块可以到几 Hz，但连刷会撕裂（papers3 `render.h:25` 注释）。
 - EPD_Painter 的 ~20fps 是 **delta 极小区域**（只推几个变化像素），不是全屏刷新，且是 2bpp 4 级灰牺牲了 16 级灰。
 
 **游戏设计要反过来迁就硬件**（这其实正是手册 §1.1 自己说的"慢生活"定位）：
 
 - 场景**静止时完全不刷新**（手册 §4.3 的"停止操作 3 秒停刷"是对的）。
-- 交互瞬间（拖拽家具、墨滴滚动）用 **FAST 局部 + delta**，靠熔断机制定期 GC16 清残影（m5ui 已有 `FULL_EVERY=8` 同款思路）。
+- 交互瞬间（拖拽家具、墨滴滚动）用 **FAST 局部 + delta**，靠熔断机制定期 GC16 清残影（papers3 已有 `FULL_EVERY=8` 同款思路）。
 - **"30Hz 逻辑 tick"没问题**（算，不推屏）；**"15Hz 渲染"是错的**，改成"按需渲染，最高局部几 Hz，全屏 ≤1.3Hz"。
 
 ---
@@ -140,10 +140,10 @@
 - [ ] 现状是「**实体级刷新**」——每个脏实体独立 startWrite/endWrite + display 推一块
   （`render.h:53` render 循环）。游戏要的是「**脏矩形 diff + 多缓冲合成**」。
 - [ ] **多缓冲显存**（手册 §3.3 的 vfb_background / vfb_dynamic / vfb_composite，每个 259KB，
-  数学对：960×540×4bit÷8 = 259200B）：m5ui 现在没有这层，是直接画 M5GFX 的帧缓冲。
+  数学对：960×540×4bit÷8 = 259200B）：papers3 现在没有这层，是直接画 M5GFX 的帧缓冲。
 - [ ] **LCD_CAM DMA 直驱 + delta 更新**：参考 EPD_Painter 移植，或**先降级**——慢节奏游戏用现有
   "实体级刷新 + FAST 局部"足够跑通原型，20fps 那套留到玩法验证后再上。
-- [ ] 熔断清理（GC16 全刷）——m5ui 已有 `FULL_EVERY=8` + `quality_wash()`，直接复用。
+- [ ] 熔断清理（GC16 全刷）——papers3 已有 `FULL_EVERY=8` + `quality_wash()`，直接复用。
 
 ### Phase 3 — 游戏引擎（m5game）
 
@@ -178,7 +178,7 @@
 | GT911/BMI270/BM8563/蜂鸣器/EPD_ED047TC1/8MB/16MB/直驱 | M5Stack PaperS3 官方规格表（docs.m5stack.com / switch-science 镜像 / shop 页）|
 | 屏幕直驱（非 IT8951）| 官方对比表：「E-ink Screen Control: ESP32S3R8 direct drive（PaperS3）vs IT8951（M5Paper）」|
 | LCD_CAM DMA 直驱可行性 | EPD_Painter（github.com/tonywestonuk/EPD_Painter）README：绕 i80、SIMD delta、~20fps |
-| m5ui 字体栈 = stb_truetype | `main/text/ttf.h`、`third_party/stb_truetype.h` |
-| m5ui EPD 波形耗时 | `main/systems/render.h:21-25`（QUALITY 780ms / TEXT 780ms / FAST 234ms / FASTEST 171ms）|
+| papers3 字体栈 = stb_truetype | `main/text/ttf.h`、`third_party/stb_truetype.h` |
+| papers3 EPD 波形耗时 | `main/systems/render.h:21-25`（QUALITY 780ms / TEXT 780ms / FAST 234ms / FASTEST 171ms）|
 | ECS 256 上限 / 组件 32 上限 | `main/ecs/world.hpp`、`main/ecs/components.h`（此前已核对）|
 | 实体级刷新（非脏矩形）| `main/systems/render.h:53` render 循环 |

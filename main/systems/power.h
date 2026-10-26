@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <esp_timer.h>
+#include <esp_heap_caps.h>
 #include <M5Unified.h>
 #include "ecs/world.hpp"
 #include "platform/nvs.h"
@@ -28,7 +29,7 @@
 #include "platform/wifi_sta.h"
 #include "plugin.h"
 
-namespace m5ui::systems::power {
+namespace papers3::systems::power {
 
 using ecs::Entity;
 
@@ -51,9 +52,15 @@ inline void sleep_now() {
         FILE* f = fopen(path, "rb");
         if (f) {
             fseek(f, 0, SEEK_END);
-            long n = ftell(f);
+            const long n = ftell(f);
             fseek(f, 0, SEEK_SET);
-            uint8_t* buf = (uint8_t*)malloc((size_t)n);
+            // ★ 缓冲走 PSRAM，并且设上限：内部 RAM 只剩十几 KB，一张几十 KB 的 PNG
+            //   用 malloc 必然失败 → 屏保永远黑屏（用户报过"屏保图不显示"）。
+            //   上限防一张超大图把 8MB PSRAM 吃光（解码器自己还要临时空间）。
+            uint8_t* buf = nullptr;
+            const long CAP = 4L * 1024 * 1024;
+            if (n > 0 && n <= CAP) buf = (uint8_t*)heap_caps_malloc((size_t)n, MALLOC_CAP_SPIRAM);
+            else if (n > CAP)      ESP_LOGW("PWR", "屏保图太大（%ld 字节 > %ld），改黑屏", n, CAP);
             if (buf && fread(buf, 1, (size_t)n, f) == (size_t)n) {
                 // ★ 三种都试：PNG → BMP → JPG。
                 //   原来只试 drawPng → 放 bmp/jpg 一律"解码失败，改黑屏"（用户报过屏保图不显示）。
@@ -62,7 +69,7 @@ inline void sleep_now() {
                 if (!drew) drew = M5.Display.drawBmp(buf, (uint32_t)n, 0, 0);
                 if (!drew) drew = M5.Display.drawJpg(buf, (uint32_t)n, 0, 0);
             }
-            if (buf) free(buf);
+            if (buf) heap_caps_free(buf);
             fclose(f);
             if (!drew) ESP_LOGI("PWR", "屏保图解码失败，改黑屏");
         } else {
@@ -139,4 +146,4 @@ inline bool tick(ecs::World& w) {
     return !g_asleep;
 }
 
-} // namespace m5ui::systems::power
+} // namespace papers3::systems::power

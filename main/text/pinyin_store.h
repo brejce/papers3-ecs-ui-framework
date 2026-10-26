@@ -24,7 +24,7 @@
 #include "esp_log.h"
 #include "text/pinyin_index.h"
 
-namespace m5ui::ime {
+namespace papers3::ime {
 
 static const char* STORE_TAG = "PYIDX";
 
@@ -228,4 +228,4 @@ inline void table_bump(Table& t, const char* py, uint16_t cp) {
     }
 }
 
-} // namespace m5ui::ime
+} // namespace papers3::ime

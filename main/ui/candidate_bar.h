@@ -20,11 +20,11 @@
 #include "text/ttf.h"
 #include "systems/render.h"    // apply_epd_mode / epd_push / g_band_y
 
-namespace m5ui::ui::cb {
+namespace papers3::ui::cb {
 
 using ecs::Entity;
-using namespace m5ui::ecs::components;
-using namespace m5ui::ui::widgets;
+using namespace papers3::ecs::components;
+using namespace papers3::ui::widgets;
 
 inline constexpr int MAX_CELLS = 8;
 inline constexpr uint32_t CB_DOT = 0xE8E8E8;   // 点阵底色（FAST 档 → Bayer 点阵）
@@ -86,7 +86,7 @@ struct Bar {
         const bool partial = shown() && systems::g_band_y < 0;
         for (int i = 0; i < MAX_CELLS; ++i) {
             char s[8] = {0};
-            if (i < n) { int k = m5ui::ime::cp_to_utf8(cps[i], s); s[k] = 0; }
+            if (i < n) { int k = papers3::ime::cp_to_utf8(cps[i], s); s[k] = 0; }
             if (std::strcmp(buf[i], s) == 0) continue;   // 没变 → 不刷
             std::strcpy(buf[i], s);
             if (partial) redraw_cell(i);                 // 打字中：只推这一格
@@ -98,15 +98,15 @@ struct Bar {
     void draw_cell_glyph(int i) {
         if (i < 0 || i >= MAX_CELLS || !buf[i][0]) return;
         systems::apply_epd_mode(2);                  // 文字：quality（中文抗锯齿，读底合成透点阵）
-        const float keep = m5ui::ttf::size_px();
-        m5ui::ttf::set_size((float)KB_FONT_PX);
+        const float keep = papers3::ttf::size_px();
+        papers3::ttf::set_size((float)KB_FONT_PX);
         int32_t tw = 0, th = 0;
-        m5ui::ttf::measure(buf[i], &tw, &th);
+        papers3::ttf::measure(buf[i], &tw, &th);
         M5.Display.startWrite();
-        m5ui::ttf::draw_text(cell_x[i] + (cw - tw) / 2, y + (h - th) / 2,
+        papers3::ttf::draw_text(cell_x[i] + (cw - tw) / 2, y + (h - th) / 2,
                              buf[i], 0x000000, 0);
         M5.Display.endWrite();
-        m5ui::ttf::set_size(keep);
+        papers3::ttf::set_size(keep);
     }
 
     // 局部重画一格：擦成点阵 + 画新字形 + 只推这一格（打字中候选变了的走这里）
@@ -168,4 +168,4 @@ inline void cb_draw_thunk(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t f
 
 inline void tick_g() { if (g_inst) g_inst->tick(); }
 
-} // namespace m5ui::ui::cb
+} // namespace papers3::ui::cb

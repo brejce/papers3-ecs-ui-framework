@@ -38,11 +38,12 @@
 #include "ecs/components.h"
 #include "ui/widgets.h"
 #include "ui/icons.h"
+#include "ui/kb_glyphs.h"     // 键面字形位图（编进代码，34px，ASCII）
 #include "text/ttf.h"
 #include "platform/nvs.h"       // cfg::g_cfg（墨色档；描边档不再吃 —— 键盘固定 1px）
 #include "systems/render.h"     // epd_push / apply_epd_mode（键盘自己画、自己推）
 
-namespace m5ui::ui::kb {
+namespace papers3::ui::kb {
 
 // ── 按键语义 ──
 enum Kind : uint8_t {
@@ -233,14 +234,14 @@ inline void draw_shift_key(const State& st, int32_t x, int32_t y, int32_t w, int
     const char* seg[3] = {"A", "/", "a"};
     int32_t tw[3] = {0, 0, 0}, th = 0, total = 0;
     for (int i = 0; i < 3; i++) {
-        m5ui::ttf::measure(seg[i], &tw[i], &th);
+        papers3::ttf::measure(seg[i], &tw[i], &th);
         total += tw[i];
     }
     const uint32_t col[3] = { upper ? 0x000000 : DIM, 0x000000, upper ? DIM : 0x000000 };
     int32_t px = x + (w - total) / 2;
     const int32_t py = y + (h - th) / 2;
     for (int i = 0; i < 3; i++) {
-        m5ui::ttf::draw_text(px, py, seg[i], col[i], 0xFFFFFF);
+        papers3::ttf::draw_text(px, py, seg[i], col[i], 0xFFFFFF);
         px += tw[i];
     }
 }
@@ -260,6 +261,7 @@ struct Keyboard {
     ecs::Entity self  = ecs::INVALID_ENTITY;   // ★ 唯一实体：容器（自绘全部键面）
 
     Key         slot[KEY_TOTAL] = {};
+    bool        warmed = false;          // 键面字是否已预烘（见 warm_labels）
 
     // 每键几何（build 时预计算；绘制/命中共用这一份 —— 同源，不会出现「画在这、点不中」）
     struct KeyGeo { int16_t x, y, w, h; };
@@ -358,6 +360,27 @@ struct Keyboard {
 
     // 改某一格的键面（动态文案由外面给，比如 en/cn）。
     // 只重画**这一个键**（原来整块 mark_dirty 会整个键盘重推一遍，浪费）。
+    // ── 键面字预烘 ──
+    // 键面 label 是固定的一小组字（A-Z / 0-9 / ?123 / 空格 / 换行 …），字号也固定。
+    // 开机第一次画键盘前先全部光栅化一遍，之后每次画都是**命中缓存/闪存位图**，
+    // 不再逐字测量 + 光栅化 —— 键面像素每次都完全一致（这正是"残影不累积"的前提）。
+    void warm_labels() {
+        if (warmed) return;
+        warmed = true;
+        const float keep = papers3::ttf::size_px();
+        papers3::ttf::set_size((float)widgets::KB_FONT_PX);
+        for (int i = 0; i < KEY_TOTAL; ++i) {
+            if (!slot[i].label || !slot[i].label[0]) continue;
+            const char* p = slot[i].label;
+            int32_t cp;
+            while ((cp = papers3::ttf::utf8_next(p)) != 0) {   // 逐码点光栅化（落 gcache + gflash）
+                auto g = papers3::ttf::rasterize(cp);
+                papers3::ttf::free_glyph(g);
+            }
+        }
+        papers3::ttf::set_size(keep);
+    }
+
     // 不可见时不画（shown() 为假，draw_key 也只是白写帧缓冲，无屏推）。
     void set_label(int i, const char* s) {
         if (i < 0 || i >= KEY_TOTAL) return;
@@ -433,56 +456,84 @@ struct Keyboard {
     void draw_face(int i, bool pressed) {
         const KeyGeo& g = geo[i];
         const int32_t bw = pressed ? 2 : 1;
-        systems::apply_epd_mode(4);              // FASTEST：边框最干净
+        // ★ 键面（边框 + 白底 + 键面字）整块走 GC13：
+        //   原来边框/白底用 FASTEST(DU)，而键面字就压在它擦出来的白底上，
+        //   每开一次键盘留一点残电荷，几十次后按键上的字母就"烧"在屏上了。
+        //   键面是静态的，一次 GC13 干净到底比事后补救便宜。
+        systems::apply_epd_mode(1);
         M5.Display.startWrite();
-        M5.Display.fillRect(g.x, g.y, g.w, g.h, TFT_BLACK);           // 描边层
-        M5.Display.fillRect(g.x + bw, g.y + bw, g.w - 2*bw, g.h - 2*bw, TFT_WHITE);  // 内部白
+        M5.Display.fillRect(g.x, g.y, g.w, g.h, TFT_BLACK);           // 描边层（按下态就是整块墨）
+        if (!pressed)
+            M5.Display.fillRect(g.x + bw, g.y + bw, g.w - 2*bw, g.h - 2*bw, TFT_WHITE);  // 常态内部白
         M5.Display.endWrite();
 
-        systems::apply_epd_mode(2);              // TEXT：文字抗锯齿（画在内部白上）
+        systems::apply_epd_mode(1);              // 同上：键面字也走 GC13
         M5.Display.startWrite();
-        const float keep = m5ui::ttf::size_px();
-        m5ui::ttf::set_size((float)widgets::KB_FONT_PX);   // ★ 键面字号键盘自管
+        const float keep = papers3::ttf::size_px();
+        papers3::ttf::set_size((float)widgets::KB_FONT_PX);   // ★ 键面字号键盘自管
+        const uint32_t face_fg = pressed ? TFT_WHITE : TFT_BLACK;      // 按下：白字
+        const uint32_t face_bg = pressed ? TFT_BLACK : TFT_WHITE;
         if (i == SLOT_DEL) {
-            icons::backspace(g.x, g.y, g.w, g.h, TFT_BLACK, TFT_WHITE);
+            icons::backspace(g.x, g.y, g.w, g.h, face_fg, face_bg);
         } else if (i == SLOT_SHIFT && st.panel == 0) {
-            draw_shift_key(st, g.x, g.y, g.w, g.h, TFT_BLACK, TFT_WHITE);
+            draw_shift_key(st, g.x, g.y, g.w, g.h, face_fg, face_bg);
         } else if (slot[i].label && slot[i].label[0]) {
+            // ★ 键面字 = **编进代码的位图**，直接贴（不走 TTF、不查缓存、不占 PSRAM）。
+            //   键面字号固定 34px、字形集就是 ASCII（+ ← →），所以可以完全烘死。
             int32_t tw = 0, th = 0;
-            m5ui::ttf::measure(slot[i].label, &tw, &th);
-            m5ui::ttf::draw_text(g.x + (g.w - tw) / 2, g.y + (g.h - th) / 2,
-                                 slot[i].label, cfg::g_cfg.ink, TFT_WHITE);
+            papers3::ttf::measure(slot[i].label, &tw, &th);
+            const int32_t tx = g.x + (g.w - tw) / 2;
+            const int32_t ty = g.y + (g.h - th) / 2;
+            const int32_t ybase = ty + papers3::ttf::g_default.ascent;
+            // 按下 = 黑底白字（255 墨 / 0 底）；常态 = ink 墨 / 白底
+            const uint8_t fg_g = pressed ? 255 : papers3::ttf::ink_level(cfg::g_cfg.ink);
+            const uint8_t bg_g = pressed ? 0 : 255;
+            int32_t pen = 0;
+            const char* p = slot[i].label;
+            int32_t cp;
+            bool all_hit = true;
+            while ((cp = papers3::ttf::utf8_next(p)) != 0) {
+                const kbgl::G* gl = kbgl::find((uint32_t)cp);
+                if (!gl) { all_hit = false; break; }
+                if (gl->len) {
+                    const int32_t gx = tx + pen + gl->xo;
+                    const int32_t gy = ybase + gl->yo;
+                    uint8_t line[160];
+                    for (int r = 0; r < gl->h; ++r) {
+                        const uint8_t* src = kbgl::BITS + gl->off + r * gl->w;
+                        for (int k = 0; k < gl->w; ++k)          // 白底上混墨：key 里面是纯白
+                            line[k] = (uint8_t)(bg_g + (fg_g - bg_g) * (255 - src[k]) / 255);
+                        M5.Display.pushImage(gx, gy + r, gl->w, 1,
+                                             (const lgfx::grayscale_t*)line);
+                    }
+                }
+                pen += gl->adv;
+            }
+            if (!all_hit) {                                   // 非 ASCII（正常不会走到）：退回 TTF
+                papers3::ttf::draw_text(tx, ty, slot[i].label, face_fg, face_bg);
+            }
         }
-        m5ui::ttf::set_size(keep);
+        papers3::ttf::set_size(keep);
         M5.Display.endWrite();
     }
 
-    // 按下/弹起反馈：只改边框那一圈（1px↔2px），只推 4 条窄带 —— 中间白底+字不动、不闪。
-    // （照用户 MicroPython 版：边框走 FASTEST 刷新，键面中间不刷）
+    // 重画**这一个键**（换面板 / 切 A-a 时用）：整键重画 + 只推这一键
+    void redraw_key_full(int i) {
+        if (i < 0 || i >= KEY_TOTAL) return;
+        draw_key(i, pressed_i == i);
+    }
+
+    // 按下/弹起：**整键重画 + 只推这一键**。
+    //   原来是"描边 1px→2px，只推 4 条窄带" —— 墨水屏上 2px 边框几乎看不出来，
+    //   而且和第一次点击（整面重画）观感不一致。现在按下整键反白（白字黑底），
+    //   松手复原：每次反馈一模一样、都看得见，推的还是一键的小矩形（约 60×46）。
     void draw_key(int i, bool pressed) {
         const KeyGeo& g = geo[i];
-        const uint32_t c = pressed ? TFT_BLACK : TFT_WHITE;
-        systems::apply_epd_mode(4);              // FASTEST：2 级，边框最快最干净
-        M5.Display.startWrite();
-        M5.Display.fillRect(g.x + 1, g.y + 1, g.w - 2, 1, c);          // 上（内圈 1px）
-        M5.Display.fillRect(g.x + 1, g.y + g.h - 2, g.w - 2, 1, c);    // 下
-        M5.Display.fillRect(g.x + 1, g.y + 1, 1, g.h - 2, c);          // 左
-        M5.Display.fillRect(g.x + g.w - 2, g.y + 1, 1, g.h - 2, c);    // 右
-        M5.Display.endWrite();
-        systems::epd_push(g.x, g.y, g.w, 2);                          // 上带
-        systems::epd_push(g.x, g.y + g.h - 2, g.w, 2);                // 下带
-        systems::epd_push(g.x, g.y + 2, 2, g.h - 4);                  // 左带
-        systems::epd_push(g.x + g.w - 2, g.y + 2, 2, g.h - 4);        // 右带
-    }
-
-    // 换键面/label 变了：全量重画 + 推整个键（文字变了才走这个，不是按下反馈）
-    void redraw_key_full(int i) {
-        draw_face(i, false);
-        const KeyGeo& g = geo[i];
+        draw_face(i, pressed);
+        systems::apply_epd_mode(1);
         systems::epd_push(g.x, g.y, g.w, g.h);
     }
 
-    // 容器 CustomDraw：全部键面画进帧缓冲。
     // 整块推送不在这里做 —— 渲染器画完容器会自己 epd_push(容器矩形)，
     // 键盘只以覆盖层形态出现，那次推送必然落在带内被拦下，由 flush_band 一次推完。
     void draw_all() {
@@ -500,4 +551,4 @@ inline void tick_g() {
     if (g_inst) g_inst->tick();
 }
 
-} // namespace m5ui::ui::kb
+} // namespace papers3::ui::kb

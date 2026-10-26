@@ -10,14 +10,14 @@
 
 **`old/` 里没有分章分类**，整个 `papers3_uiframe` 也没有（一个「章」字都没有）。
 
-分章这件事在你所有工程里只出现在两处，**都在 m5ui 侧**：
+分章这件事在你所有工程里只出现在两处，**都在 papers3 侧**：
 
 | 位置 | 原文 |
 |---|---|
-| `m5ui/apps/reader/main/reader.cpp:4` | 懒分页、位图缓存（so_fb_save/restore）、**分章分卷 —— 后续加**。 |
-| `m5ui/docs/architecture/READER_API_SURFACE.md:57` | **分章分卷 / 章节识别** → **.so 自己写**（识别章节名、按卷/章分页，**用户 micropython 版已有**） |
+| `papers3/apps/reader/main/reader.cpp:4` | 懒分页、位图缓存（so_fb_save/restore）、**分章分卷 —— 后续加**。 |
+| `papers3/docs/architecture/READER_API_SURFACE.md:57` | **分章分卷 / 章节识别** → **.so 自己写**（识别章节名、按卷/章分页，**用户 micropython 版已有**） |
 
-文档说"micropython 版已有"，但那份实现**不在** `papers3_uiframe`、`m5ui`、`frame`、`sketch_jun4a` 里。
+文档说"micropython 版已有"，但那份实现**不在** `papers3_uiframe`、`papers3`、`frame`、`sketch_jun4a` 里。
 下落排查建议：① 设备 SD 卡（`http://<设备IP>/?path=/` 可直接浏览，
 MicroPython 时代留在卡里的 `apps/*.py`）；② 备份目录
 （`~/Project/m5ui_backup_20261009_140547`、`m5ui-code-backup-20261009`、`m5ui-doc-backup-20261009`、
@@ -65,9 +65,9 @@ PageContent(chars_with_coords=[(char, x, y), ...],
 
 ---
 
-## 3. 与 m5ui 阅读器（`apps/reader`，当前在用的那份）的差异
+## 3. 与 papers3 阅读器（`apps/reader`，当前在用的那份）的差异
 
-| | `old/`（MicroPython） | `m5ui/apps/reader`（`.so`） |
+| | `old/`（MicroPython） | `papers3/apps/reader`（`.so`） |
 |---|---|---|
 | 书进内存 | **不用**：按需 seek 读窗口 | 整本进 PSRAM，**512KB 上限**（`reader.cpp:21 MAXF`） |
 | 分页 | 字节偏移 + 固定网格容量 | 先解析成 **Block 数组**再排版分页（`paginate_until`） |
@@ -78,7 +78,7 @@ PageContent(chars_with_coords=[(char, x, y), ...],
 
 ---
 
-## 4. 分章怎么落地（补齐 m5ui 缺的那块）
+## 4. 分章怎么落地（补齐 papers3 缺的那块）
 
 ### 4.1 索引结构
 书整本在 PSRAM、排版单位是**块**，所以索引存块下标最自洽：
@@ -142,9 +142,9 @@ grep -rlE '章节|分章|chapter|CHAP_|is_chapter|第[0-9零一二三四五六�
   ~/Project --include=*.py --include=*.c --include=*.cpp --include=*.h --include=*.ino \
   | grep -vE 'M5GFX|M5Unified|node_modules|\.venv|__pycache__|third_party|/build/'
 
-# ③ m5ui 阅读器现状
-sed -n '1,5p' ~/Project/m5ui/apps/reader/main/reader.cpp
-grep -n '分章\|章节识别' ~/Project/m5ui/docs/architecture/READER_API_SURFACE.md
+# ③ papers3 阅读器现状
+sed -n '1,5p' ~/Project/papers3/apps/reader/main/reader.cpp
+grep -n '分章\|章节识别' ~/Project/papers3/docs/architecture/READER_API_SURFACE.md
 
 # ④ 编码核查（怕 GBK 才漏搜）
 file ~/Project/papers3_uiframe/papers3_uiframe/old/*.py

@@ -12,7 +12,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 
-namespace m5ui::wifi_list {
+namespace papers3::wifi_list {
 
 inline constexpr int MAX_ENTRIES = 8;
 struct Entry { char ssid[33]; char pass[65]; };   // 98 字节，无 padding，可 blob 直存
@@ -75,4 +75,4 @@ inline void remove(const char* ssid) {
     memset(&g_entries[MAX_ENTRIES - 1], 0, sizeof(Entry));
 }
 
-} // namespace m5ui::wifi_list
+} // namespace papers3::wifi_list

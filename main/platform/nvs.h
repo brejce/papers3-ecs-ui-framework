@@ -17,7 +17,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 
-namespace m5ui::cfg {
+namespace papers3::cfg {
 
 static const char* TAG = "CFG";
 static const char* NS  = "m5ui";
@@ -114,7 +114,9 @@ inline bool load() {
     nvs_close(h);
 
     // 范围兜底：NVS 里的值可能来自旧固件或被人为改坏
-    if (g_cfg.size < 16 || g_cfg.size > 48) g_cfg.size = 28;
+    // ★ 2026-10-22：字号不再对外开放（设置 app 的字号项已删）。全局正文固定 22px，
+    //   旧 NVS 里存的 34 一律覆盖掉 —— 否则启动器 / 输入法编辑条还是旧的大字号。
+    g_cfg.size = 22;
     if (g_cfg.wave_def > 1) g_cfg.wave_def = 1;                 // 波形：默认配置开关
     if (g_cfg.wave_sel < 1 || g_cfg.wave_sel > 5) g_cfg.wave_sel = 2;  // 波形：可选档 1~5
 
@@ -180,4 +182,4 @@ inline void font_path(char* out, size_t n) {
     snprintf(out, n, "/sdcard/%s", g_cfg.font);
 }
 
-} // namespace m5ui::cfg
+} // namespace papers3::cfg

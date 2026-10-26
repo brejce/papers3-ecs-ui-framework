@@ -10,7 +10,7 @@
 #include "lgfx/utility/lgfx_qrcode.h"   // m5gfx 组件里带的（自带头文件的 extern "C"）
 #include <M5Unified.h>
 
-namespace m5ui::ui::qr {
+namespace papers3::ui::qr {
 
 static uint8_t g_buf[4096];   // 模块位图（v10 也才 400 来字节，留足）
 
@@ -51,4 +51,4 @@ inline uint8_t draw(const char* text, int32_t x, int32_t y, int32_t size, int qu
     return v;
 }
 
-} // namespace m5ui::ui::qr
+} // namespace papers3::ui::qr

@@ -17,7 +17,7 @@
 #include <esp_sntp.h>
 #include <M5Unified.h>
 
-namespace m5ui { namespace rtctime {
+namespace papers3 { namespace rtctime {
 
 inline bool g_valid        = false;   // 系统时间可信（RTC 读到过 或 网络同步过）
 inline bool g_ntp_inited   = false;
@@ -56,7 +56,7 @@ inline bool begin() {
         ESP_LOGW("RTC", "RTC 电压低标志置位（掉过电）→ 值不可信，等联网校准");
         return false;
     }
-    // ★ 必须写 m5:: —— rtc_datetime_t 在 m5 命名空间里，本文件在 m5ui::rtctime 里，
+    // ★ 必须写 m5:: —— rtc_datetime_t 在 m5 命名空间里，本文件在 papers3::rtctime 里，
     //   非限定查找找不到（编译报的就是 'rtc_datetime_t' was not declared）。
     m5::rtc_datetime_t dt;
     if (!M5.Rtc.getDateTime(&dt)) {
@@ -142,4 +142,4 @@ inline int hhmm() {
     return tmv.tm_hour * 100 + tmv.tm_min;
 }
 
-}} // namespace m5ui::rtctime
+}} // namespace papers3::rtctime

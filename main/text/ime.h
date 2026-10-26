@@ -23,9 +23,9 @@
 #include "ui/keyboard.h"
 #include "text/pinyin_store.h"   // 拼音索引的存储：内置默认 / SD 文件可升级 / 运行时按用量调序
 
-namespace m5ui::ime {
+namespace papers3::ime {
 
-namespace kb = m5ui::ui::kb;   // 键盘组件：本文件只是它的一个输出端
+namespace kb = papers3::ui::kb;   // 键盘组件：本文件只是它的一个输出端
 
 // ── 模式 ──
 // 键盘面板（字母/符号）归 keyboard.h 管；这里只管「输入语义」是英文还是中文拼音。
@@ -105,20 +105,28 @@ inline int cp_to_utf8(uint32_t cp, char* out) {
     out[3] = (char)(0x80 | (cp & 0x3F));
     return 4;
 }
-inline void u8_insert(char* buf, size_t cap, int at_char, uint32_t cp) {
+// ★ 返回 false = 放不下（缓冲已满）。调用方**必须**据此决定要不要 caret++ ——
+//   原来返回 void，放不下也静默放过，调用方照样 caret++ → caret 跑到字符数之外，
+//   下一次退格走 u8_delete_before(off = 串尾) 时越界读到 text[] 之外的字节，
+//   把后面的 caret 字段一起写坏（实测：敲 24 个汉字后 strlen 变 68、caret 变负）。
+inline bool u8_insert(char* buf, size_t cap, int at_char, uint32_t cp) {
     char enc[4];
     int n = cp_to_utf8(cp, enc);
     int off = u8_offset(buf, at_char);
     size_t len = strlen(buf);
-    if (len + (size_t)n + 1 > cap) return;
+    if (len + (size_t)n + 1 > cap) return false;
     memmove(buf + off + n, buf + off, len - off + 1);
     memcpy(buf + off, enc, n);
+    return true;
 }
 inline void u8_delete_before(char* buf, int at_char) {
     if (at_char <= 0) return;
-    int off = u8_offset(buf, at_char - 1);
+    const size_t len = strlen(buf);
+    const int off = u8_offset(buf, at_char - 1);
+    if (off >= (int)len) return;                 // 光标在串尾之外 → 没有可删的（防御）
     int n = u8_len(buf + off);
-    memmove(buf + off, buf + off + n, strlen(buf + off + n) + 1);
+    if ((size_t)(off + n) > len) n = (int)len - off;   // 末尾半截字节也按实际长度删
+    memmove(buf + off, buf + off + n, len - (size_t)off - (size_t)n + 1);
 }
 
 // ── 候选：全集 + 分页 ──
@@ -158,7 +166,7 @@ inline void candidates(Context& c) {
 
     auto push = [&](uint16_t cp) {
         if (c.list_n >= LIST_MAX) return;
-        if (!m5ui::ttf::has_codepoint((int32_t)cp)) return;   // ★ 字体没有 → 不要（否则画方块）
+        if (!papers3::ttf::has_codepoint((int32_t)cp)) return;   // ★ 字体没有 → 不要（否则画方块）
         for (int i = 0; i < c.list_n; i++) if (c.list[i] == cp) return;
         c.list[c.list_n++] = cp;
     };
@@ -208,9 +216,10 @@ inline Change commit(Context& c, int idx) {
         // 没有这个映射，table_bump 传空串会把词频表搞乱。
         if (c.py_len > 0) table_bump(g_table, c.py, cp);
         ch.from = (int16_t)c.caret;              // 变化起点 = 插入处（插入前的光标位）
-        u8_insert(c.text, sizeof(c.text), c.caret, cp);
-        c.caret++;
-        ch.text = true;
+        if (u8_insert(c.text, sizeof(c.text), c.caret, cp)) {   // ★ 满了就别动 caret
+            c.caret++;
+            ch.text = true;
+        }
     }
     c.py_len = 0; c.py[0] = 0;   // 只清拼音；候选列表留着（能连点）
     return ch;
@@ -235,9 +244,10 @@ inline Change press(Context& c, const kb::Key& k, uint8_t mods) {
             uint32_t cp = k.ch;
             if (c.mode == MODE_EN && (mods & kb::MOD_LSHIFT) && cp >= 'a' && cp <= 'z') cp -= 32;
             ch.from = (int16_t)c.caret;              // 变化起点 = 插入处
-            u8_insert(c.text, sizeof(c.text), c.caret, cp);
-            c.caret++;
-            ch.text = true;
+            if (u8_insert(c.text, sizeof(c.text), c.caret, cp)) {   // ★ 满了就别动 caret
+                c.caret++;
+                ch.text = true;
+            }
             break;
         }
 
@@ -262,9 +272,10 @@ inline Change press(Context& c, const kb::Key& k, uint8_t mods) {
                 ch = commit(c, 0);
             } else {
                 ch.from = (int16_t)c.caret;
-                u8_insert(c.text, sizeof(c.text), c.caret, ' ');
-                c.caret++;
-                ch.text = true;
+                if (u8_insert(c.text, sizeof(c.text), c.caret, ' ')) {   // ★ 满了就别动 caret
+                    c.caret++;
+                    ch.text = true;
+                }
             }
             break;
 
@@ -309,4 +320,4 @@ inline Change press(Context& c, const kb::Key& k, uint8_t mods) {
     return ch;
 }
 
-} // namespace m5ui::ime
+} // namespace papers3::ime

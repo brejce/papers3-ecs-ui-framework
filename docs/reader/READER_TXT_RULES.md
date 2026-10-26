@@ -262,7 +262,7 @@ V 卷  改一行:              卷 9 章942     ← "第11集/第12集"不再算
 
 ```
 进入阅读器 app（page_init）
-   └─ 宿主 so_read_text("/m5ui/reader_rules.txt", buf, cap)
+   └─ 宿主 so_read_text("/papers3/reader_rules.txt", buf, cap)
         ├─ 读到了 → .so 解析（校验版本行）→ 用它
         └─ 没读到/版本不对 → 用 .so 里编进去的**内置默认规则**，并打日志说明用了哪份
 ```

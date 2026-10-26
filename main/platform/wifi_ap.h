@@ -16,7 +16,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
-namespace m5ui::wifi_ap {
+namespace papers3::wifi_ap {
 
 static constexpr const char* SSID    = "M5PaperS3";
 static constexpr const char* PASS    = "12345678";   // ≥8 位（WPA2）
@@ -153,4 +153,4 @@ inline bool set_ap(bool on) {
     return true;
 }
 
-} // namespace m5ui::wifi_ap
+} // namespace papers3::wifi_ap

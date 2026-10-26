@@ -27,6 +27,7 @@
 #include "text/ttf.h"    // FontCtx（多实例字体）
 #include "platform/sd.h" // 文件能力（宿主侧）
 #include "pages/manager.h" // so_exit 回 launcher 用
+#include "ui/sbar.h"     // 全局统一状态栏（唯一实现）
 #include "systems/render.h" // apply_epd_mode —— 波形档必须和固件页面走同一条路
 #include "platform/nvs.h"  // cfg::init()（幂等）—— 页快照自检的结论要存 NVS
 #include "platform/wifi_ap.h"   // so_net_*：热点开/关（给设置 app）
@@ -51,7 +52,7 @@ extern "C" int so_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t colo
 }
 
 // 用 M5GFX 内置点阵字画一行文字到帧缓冲（不推屏）。
-// 注：m5ui 正文/UI 都用 TTF（so_font_draw），这是内置点阵字，通常只作兜底。
+// 注：papers3 正文/UI 都用 TTF（so_font_draw），这是内置点阵字，通常只作兜底。
 extern "C" int so_text(int32_t x, int32_t y, const char* s, uint32_t color)
 {
     if (!s || !*s) return -1;
@@ -81,13 +82,13 @@ extern "C" void* so_font_load(const char* name, float px)
 {
     if (!name) return nullptr;
     char path[320];
-    snprintf(path, sizeof(path), "%s/%s", m5ui::sd::FONT_DIR, name);   // /sdcard/fonts/<name>
+    snprintf(path, sizeof(path), "%s/%s", papers3::sd::FONT_DIR, name);   // /sdcard/fonts/<name>
 
-    auto* c = (m5ui::ttf::FontCtx*)heap_caps_malloc(sizeof(m5ui::ttf::FontCtx), MALLOC_CAP_8BIT);
+    auto* c = (papers3::ttf::FontCtx*)heap_caps_malloc(sizeof(papers3::ttf::FontCtx), MALLOC_CAP_8BIT);
     if (!c) return nullptr;
-    new (c) m5ui::ttf::FontCtx();
-    if (!m5ui::ttf::load_from_sd(*c, path, px)) {
-        m5ui::ttf::free_font(*c);
+    new (c) papers3::ttf::FontCtx();
+    if (!papers3::ttf::load_from_sd(*c, path, px)) {
+        papers3::ttf::free_font(*c);
         heap_caps_free(c);
         return nullptr;
     }
@@ -97,20 +98,20 @@ extern "C" void* so_font_load(const char* name, float px)
 extern "C" void so_font_free(void* h)
 {
     if (!h) return;
-    auto* c = (m5ui::ttf::FontCtx*)h;
-    m5ui::ttf::free_font(*c);
+    auto* c = (papers3::ttf::FontCtx*)h;
+    papers3::ttf::free_font(*c);
     heap_caps_free(c);
 }
 
 extern "C" void so_font_set_size(void* h, float px)
 {
-    if (h) m5ui::ttf::set_size(*(m5ui::ttf::FontCtx*)h, px);
+    if (h) papers3::ttf::set_size(*(papers3::ttf::FontCtx*)h, px);
 }
 
 extern "C" int so_font_measure(void* h, const char* s, int32_t* out_w, int32_t* out_h)
 {
     if (!h || !s) return -1;
-    m5ui::ttf::measure(*(m5ui::ttf::FontCtx*)h, s, out_w, out_h);
+    papers3::ttf::measure(*(papers3::ttf::FontCtx*)h, s, out_w, out_h);
     return 0;
 }
 
@@ -120,7 +121,7 @@ extern "C" int so_font_measure(void* h, const char* s, int32_t* out_w, int32_t* 
 extern "C" int32_t so_font_measure_prefix(void* h, const char* s, int32_t char_count)
 {
     if (!h || !s || char_count <= 0) return 0;
-    return m5ui::ttf::measure_prefix(*(m5ui::ttf::FontCtx*)h, s, (int)char_count);
+    return papers3::ttf::measure_prefix(*(papers3::ttf::FontCtx*)h, s, (int)char_count);
 }
 
 // ── 批处理的脏区累计（纯本文件的矩形并集；**不再动 m5gfx 头文件**）──
@@ -145,19 +146,45 @@ static void dirty_reset(void) { g_dx0 = 0; g_dy0 = 0; g_dx1 = 0; g_dy1 = 0; }
 extern "C" int so_font_draw(void* h, int32_t x, int32_t y, const char* s, uint8_t ink, int32_t ls)
 {
     if (!h || !s) return 0;
-    m5ui::ttf::FontCtx& c = *(m5ui::ttf::FontCtx*)h;
+    papers3::ttf::FontCtx& c = *(papers3::ttf::FontCtx*)h;
     if (!c.ready) return 0;
+    // ★ 先把字符串**逐字节**拷进本地缓冲（遇 NUL 就停），再量/画。
+    //   原因：.so 的 .rodata 常紧贴段尾，而 utf8_next 解多字节字符时会预读 s[1]/s[2]；
+    //   一旦这个中文字面量正好在段末尾，预读就跨进未映射内存 → LoadStoreError
+    //   （实测：终端 app 一进 page_init 就 panic，ASCII 却没事，因为 ASCII 只读 s[0]）。
+    char lbuf[192];
+    // ★ 前 10 次画字留证（.so 崩在这里时用得上）。
+    //   **必须只读到 NUL 为止** —— 原来无条件读 s[0..7]，短字面量正好压在 .rodata
+    //   段尾时这一句自己就会越界读未映射内存 → LoadStoreError（就是本函数下面
+    //   那段注释要防的故障，被日志自己踩回去了）。
+    static int dbg = 0;
+    if (dbg < 10) {
+        dbg++;
+        char hex[3 * 8 + 1];
+        int hp = 0;
+        for (int i = 0; i < 8 && s[i]; i++)
+            hp += snprintf(hex + hp, sizeof(hex) - (size_t)hp, "%02x ", (unsigned)(uint8_t)s[i]);
+        hex[hp] = 0;
+        ESP_LOGI("PLUGIN", "draw#%d h=%p s=%p x=%d y=%d 前8字节(到NUL止)=%s", dbg, h, (const void*)s, (int)x, (int)y, hex);
+    }
+    int ln = 0;
+    for (; ln < (int)sizeof(lbuf) - 1; ln++) {
+        lbuf[ln] = s[ln];
+        if (lbuf[ln] == 0) break;
+    }
+    lbuf[ln] = 0;
+    s = lbuf;
     // ★ 批处理：把这次要画的文字记进脏区（用实测墨迹 + 各 4px 余量）
-    { int32_t mw = 0, mh = 0; m5ui::ttf::measure(c, s, &mw, &mh);
+    { int32_t mw = 0, mh = 0; papers3::ttf::measure(c, s, &mw, &mh);
       if (mw > 0 && mh > 0) dirty_add(x - 4, y - 4, mw + 8, mh + 8); }
     int pen = x;
     const char* p = s;
     int32_t cp;
-    while ((cp = m5ui::ttf::utf8_next(p)) != 0) {
-        m5ui::ttf::Glyph g = m5ui::ttf::rasterize(c, cp);
+    while ((cp = papers3::ttf::utf8_next(p)) != 0) {
+        papers3::ttf::Glyph g = papers3::ttf::rasterize(c, cp);
         if (g.gray) {
-            m5ui::ttf::push_glyph(g, pen + g.xoff, y + c.ascent + g.yoff, ink);
-            m5ui::ttf::free_glyph(g);
+            papers3::ttf::push_glyph(g, pen + g.xoff, y + c.ascent + g.yoff, ink);
+            papers3::ttf::free_glyph(g);
         }
         pen += g.advance + ls;
     }
@@ -167,20 +194,20 @@ extern "C" int so_font_draw(void* h, int32_t x, int32_t y, const char* s, uint8_
 extern "C" int so_font_line_height(void* h)
 {
     if (!h) return 0;
-    return m5ui::ttf::line_height(*(m5ui::ttf::FontCtx*)h);
+    return papers3::ttf::line_height(*(papers3::ttf::FontCtx*)h);
 }
 
 // 读当前字号（.so 排版临时改字号后要还原，需要读回原值）
 extern "C" float so_font_size(void* h)
 {
     if (!h) return 0;
-    return m5ui::ttf::size_px(*(m5ui::ttf::FontCtx*)h);
+    return papers3::ttf::size_px(*(papers3::ttf::FontCtx*)h);
 }
 
 extern "C" int so_font_has(void* h, int32_t cp)
 {
     if (!h) return 0;
-    return m5ui::ttf::has_codepoint(*(m5ui::ttf::FontCtx*)h, cp);
+    return papers3::ttf::has_codepoint(*(papers3::ttf::FontCtx*)h, cp);
 }
 
 // ── 字形真墨迹框 ────────────────────────────────────────────────
@@ -191,7 +218,7 @@ extern "C" int so_font_has(void* h, int32_t cp)
 //
 //   返回的是**相对文字原点 (x,y) 的偏移**：画的时候 glyph 位图左上角落在
 //   (pen + xoff, y + ascent + yoff)，所以 dx0 = xoff、dy0 = ascent + yoff。
-static int _ink_of_glyph(const m5ui::ttf::FontCtx& c, m5ui::ttf::Glyph& g, int pen,
+static int _ink_of_glyph(const papers3::ttf::FontCtx& c, papers3::ttf::Glyph& g, int pen,
                          int* l, int* t, int* r, int* b)
 {
     if (!g.gray || g.w <= 0 || g.h <= 0) return 0;      // 空白字形（空格等）不参与
@@ -209,12 +236,12 @@ static int _ink_of_glyph(const m5ui::ttf::FontCtx& c, m5ui::ttf::Glyph& g, int p
 extern "C" int so_font_ink_bounds(void* h, int32_t cp, int32_t* x0, int32_t* y0, int32_t* x1, int32_t* y1)
 {
     if (!h) return -1;
-    m5ui::ttf::FontCtx& c = *(m5ui::ttf::FontCtx*)h;
+    papers3::ttf::FontCtx& c = *(papers3::ttf::FontCtx*)h;
     if (!c.ready) return -1;
-    m5ui::ttf::Glyph g = m5ui::ttf::rasterize(c, cp);
+    papers3::ttf::Glyph g = papers3::ttf::rasterize(c, cp);
     int l = 1 << 20, t = 1 << 20, r = -(1 << 20), b = -(1 << 20);
     const int any = _ink_of_glyph(c, g, 0, &l, &t, &r, &b);
-    m5ui::ttf::free_glyph(g);
+    papers3::ttf::free_glyph(g);
     if (!any) {
         if (x0) *x0 = 0;
         if (y0) *y0 = 0;
@@ -235,17 +262,17 @@ extern "C" int so_font_text_ink(void* h, const char* s, int32_t ls,
                                int32_t* x0, int32_t* y0, int32_t* x1, int32_t* y1)
 {
     if (!h || !s) return -1;
-    m5ui::ttf::FontCtx& c = *(m5ui::ttf::FontCtx*)h;
+    papers3::ttf::FontCtx& c = *(papers3::ttf::FontCtx*)h;
     if (!c.ready) return -1;
     int l = 1 << 20, t = 1 << 20, r = -(1 << 20), b = -(1 << 20);
     int pen = 0, any = 0;
     const char* p = s;
     int32_t cp;
-    while ((cp = m5ui::ttf::utf8_next(p)) != 0) {
-        m5ui::ttf::Glyph g = m5ui::ttf::rasterize(c, cp);
+    while ((cp = papers3::ttf::utf8_next(p)) != 0) {
+        papers3::ttf::Glyph g = papers3::ttf::rasterize(c, cp);
         any |= _ink_of_glyph(c, g, pen, &l, &t, &r, &b);
         pen += g.advance + ls;
-        m5ui::ttf::free_glyph(g);
+        papers3::ttf::free_glyph(g);
     }
     if (!any) {
         if (x0) *x0 = 0;
@@ -282,8 +309,8 @@ extern "C" void so_psram_free(void* p)
 extern "C" int so_list_fonts(char (*names)[80], int max)
 {
     if (!names || max <= 0) return 0;
-    m5ui::sd::FontFile ff[32];
-    int n = m5ui::sd::scan_fonts(ff, max > 32 ? 32 : max);
+    papers3::sd::FontFile ff[32];
+    int n = papers3::sd::scan_fonts(ff, max > 32 ? 32 : max);
     for (int i = 0; i < n && i < max; i++) {
         strncpy(names[i], ff[i].name, 79);
         names[i][79] = 0;
@@ -310,7 +337,7 @@ static bool _is_book(const char* n) {
 extern "C" int so_list_books(char (*names)[256], int max)
 {
     if (!names || max <= 0) return 0;
-    if (!m5ui::sd::mount()) return 0;
+    if (!papers3::sd::mount()) return 0;
     DIR* d = opendir("/sdcard/books");
     if (!d) return 0;
     int n = 0;
@@ -375,11 +402,30 @@ extern "C" int so_book_size(const char* name)
 // ── /sdcard/apps/ 下的通用小文件存取（.so 没有文件 API，索引缓存靠这两个）──
 // name 只允许**纯文件名**（不许含 '/' 或 ".."）→ 越不出 /sdcard/apps。
 // 这是"能力"不是"业务"：谁存什么由 .so 决定（分章索引就存这儿）。
+// ── 每个 app 的私有目录：/sdcard/apps/<so 名去掉 .so>/ ──────────────
+// 规矩（用户 2026-10-20）：**/apps 里只放 .so**，日志 / 配置 / 索引这类
+// 属于某个 app 的文件一律进它自己的子目录。目录在 load_app 时自动创建。
+static char g_app_dir[80] = "";      // 空 = 还没打开任何 app
+
+static void app_dir_for(const char* so_name, char* out, size_t cap)
+{
+    // ★ load_app 拿到的是 "apps/terminal.so" 这种相对路径：先取 basename，
+    //   否则会拼出 /sdcard/apps/apps/terminal（实测踩过）。
+    const char* base = strrchr(so_name ? so_name : "", '/');
+    base = base ? base + 1 : (so_name ? so_name : "");
+    char stem[48];
+    snprintf(stem, sizeof(stem), "%.40s", base);
+    char* dot = strrchr(stem, '.');
+    if (dot) *dot = 0;
+    snprintf(out, cap, "/sdcard/apps/%.40s", stem);
+}
+
 static bool appfile_path(const char* name, char* out, size_t cap)
 {
     if (!name || !name[0]) return false;
     if (strchr(name, '/') || strstr(name, "..")) return false;
-    snprintf(out, cap, "/sdcard/apps/%s", name);
+    if (g_app_dir[0]) snprintf(out, cap, "%s/%s", g_app_dir, name);
+    else              snprintf(out, cap, "/sdcard/apps/%s", name);   // 兜底：还没进 app
     return true;
 }
 
@@ -407,13 +453,19 @@ extern "C" int so_blob_save(const char* name, const char* buf, int len)
     return (int)put;
 }
 
-// ── 阅读器配置持久化（/sdcard/apps/reader.cfg）────────────────────
-static const char* CFG_PATH = "/sdcard/apps/reader.cfg";
+// ── 阅读器配置持久化：<appdir>/reader.cfg（老位置 /apps/reader.cfg 会自动迁过来）──
+static const char* CFG_NAME = "reader.cfg";
 
 extern "C" int so_cfg_load(char* buf, int cap)
 {
     if (!buf || cap <= 0) return -1;
-    FILE* f = fopen(CFG_PATH, "rb");
+    char path[320];
+    if (!appfile_path(CFG_NAME, path, sizeof(path))) return -1;
+    FILE* f = fopen(path, "rb");
+    if (!f && g_app_dir[0]) {                        // 一次性迁移：老的 /apps/reader.cfg
+        f = fopen("/sdcard/apps/reader.cfg", "rb");
+        if (f) ESP_LOGW("PLUGIN", "配置从老位置迁到 %s", path);
+    }
     if (!f) return -1;
     size_t got = fread(buf, 1, (size_t)cap - 1, f);
     fclose(f);
@@ -424,7 +476,9 @@ extern "C" int so_cfg_load(char* buf, int cap)
 extern "C" int so_cfg_save(const char* buf, int len)
 {
     if (!buf || len < 0) return -1;
-    FILE* f = fopen(CFG_PATH, "wb");
+    char path[320];
+    if (!appfile_path(CFG_NAME, path, sizeof(path))) return -1;
+    FILE* f = fopen(path, "wb");
     if (!f) return -1;
     size_t w = fwrite(buf, 1, (size_t)len, f);
     fclose(f);
@@ -438,11 +492,11 @@ extern "C" int so_cfg_save(const char* buf, int len)
 // ⚠️ FontCtx 是**每个 FontCtx 一份**，mmap 的句柄是独立的；固件页面用的是 g_default，不受影响。
 extern "C" void* so_font_builtin(float px)
 {
-    auto* c = (m5ui::ttf::FontCtx*)heap_caps_malloc(sizeof(m5ui::ttf::FontCtx), MALLOC_CAP_8BIT);
+    auto* c = (papers3::ttf::FontCtx*)heap_caps_malloc(sizeof(papers3::ttf::FontCtx), MALLOC_CAP_8BIT);
     if (!c) return nullptr;
-    new (c) m5ui::ttf::FontCtx();
-    if (!m5ui::ttf::load(*c, "fonts", px)) {
-        m5ui::ttf::free_font(*c);
+    new (c) papers3::ttf::FontCtx();
+    if (!papers3::ttf::load(*c, "fonts", px)) {
+        papers3::ttf::free_font(*c);
         heap_caps_free(c);
         return nullptr;
     }
@@ -472,11 +526,19 @@ extern "C" int so_cpu_load(void)
     const int n = (int)uxTaskGetNumberOfTasks();
     if (n <= 0) return -1;
     static TaskStatus_t* st = nullptr;
-    if (st == nullptr) {
-        st = (TaskStatus_t*)heap_caps_malloc(sizeof(TaskStatus_t) * (n + 4), MALLOC_CAP_8BIT);
-        if (st == nullptr) return -1;
+    static int st_cap = 0;
+    // ★ 任务数会变（httpd / sercli / 阅读器任务都是后起的）。数组只能大不能死等：
+    //   uxTaskGetSystemState() 在"数组装不下"时**一个都不填、返回 0**（见 tasks.c 的
+    //   uxArraySize >= uxCurrentNumberOfTasks 判断）→ 不复查就会静默返回 -1，
+    //   面板上的占用率永远显示不出来。
+    if (st == nullptr || st_cap < n + 4) {
+        if (st) heap_caps_free(st);
+        st_cap = n + 8;
+        st = (TaskStatus_t*)heap_caps_malloc(sizeof(TaskStatus_t) * (size_t)st_cap, MALLOC_CAP_8BIT);
+        if (st == nullptr) { st_cap = 0; return -1; }
+        ESP_LOGI("PLUGIN", "任务表扩到 %d 项（当前 %d 个任务）", st_cap, n);
     }
-    const int got = (int)uxTaskGetSystemState(st, n + 4, nullptr);
+    const int got = (int)uxTaskGetSystemState(st, (UBaseType_t)st_cap, nullptr);
     if (got <= 0) return -1;
 
     uint64_t busy = 0;                       // 所有任务累计 CPU 时间（µs）
@@ -510,13 +572,13 @@ extern "C" int so_cpu_load(void)
 // 这时 .so 该显示占位符（如 --:--），不要自己造一个假时间上去。
 extern "C" int so_clock_hhmm(void)
 {
-    return m5ui::rtctime::hhmm();
+    return papers3::rtctime::hhmm();
 }
 
 // 0/1：时间是否可信（.so 想区分“没校准”和“刚好 00:00”就查它）
 extern "C" int so_clock_valid(void)
 {
-    return m5ui::rtctime::valid() ? 1 : 0;
+    return papers3::rtctime::valid() ? 1 : 0;
 }
 
 extern "C" int so_mem_used_pct(void)
@@ -591,7 +653,7 @@ extern "C" int so_set_epd_mode(int mode)
     //   epd_text/GL16 的 36 帧（1448ms）；而设置页明明选的是 gc13（831ms）。
     //   走 apply_epd_mode 之后：默认配置下"文字"语义统一落到 gc13，
     //   全局档（wave_def=0）也真的能强制住 .so 的推屏。
-    m5ui::systems::apply_epd_mode((uint8_t)mode);
+    papers3::systems::apply_epd_mode((uint8_t)mode);
     return 0;
 }
 
@@ -736,10 +798,34 @@ static void fb_selftest()
 // ── 开机判定入口 ──────────────────────────────────────────────────────
 // 结论存 NVS ⇒ **自检只在第一次开机（或 FB_CHK_VS 变了）跑一次**，
 // 之后每次开机直接读结论 —— 不会每次开机都卡 2.7 秒。
+// 内存体检（开机打一遍；排"内部 RAM 到底被谁吃了"靠这张表）
+void mem_report()
+{
+    multi_heap_info_t i1{}, i2{}, i3{};
+    heap_caps_get_info(&i1, MALLOC_CAP_INTERNAL);
+    heap_caps_get_info(&i2, MALLOC_CAP_SPIRAM);
+    heap_caps_get_info(&i3, MALLOC_CAP_DMA);
+    ESP_LOGI("MEM", "内部SRAM 总%uK 余%uK 最大块%uK 历史最低%uK（在用块 %u）",
+             (unsigned)(heap_caps_get_total_size(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(i1.total_free_bytes / 1024), (unsigned)(i1.largest_free_block / 1024),
+             (unsigned)(i1.minimum_free_bytes / 1024), (unsigned)i1.allocated_blocks);
+    ESP_LOGI("MEM", "DMA 可用  总%uK 余%uK 最大块%uK",
+             (unsigned)(heap_caps_get_total_size(MALLOC_CAP_DMA) / 1024),
+             (unsigned)(i3.total_free_bytes / 1024), (unsigned)(i3.largest_free_block / 1024));
+    ESP_LOGI("MEM", "PSRAM     总%uK 余%uK 最大块%uK 历史最低%uK",
+             (unsigned)(heap_caps_get_total_size(MALLOC_CAP_SPIRAM) / 1024),
+             (unsigned)(i2.total_free_bytes / 1024), (unsigned)(i2.largest_free_block / 1024),
+             (unsigned)(i2.minimum_free_bytes / 1024));
+}
+
 void fb_check_init()
 {
+    // 开机就打一行 API 版本：刷完固件用串口一眼确认「设备上到底是哪版」
+    ESP_LOGI("PLUGIN", "API v%u.%u（so_sh_exec 已导出）",
+             papers3::plugin::API_VERSION_MAJOR, papers3::plugin::API_VERSION_MINOR);
+    mem_report();
     if (g_fb_selftest_done) return;
-    m5ui::cfg::init();                 // nvs_flash_init，幂等（fb_check_init 在 namespace 之外）
+    papers3::cfg::init();                 // nvs_flash_init，幂等（fb_check_init 在 namespace 之外）
 
     nvs_handle_t h;
     if (nvs_open(FB_CHK_NS, NVS_READONLY, &h) == ESP_OK) {
@@ -910,10 +996,10 @@ extern "C" int so_touch(int32_t* x, int32_t* y)
 // 不管主循环在干什么，触摸都有人在看 → 点一下算一下。
 // 采样本身很便宜：Touch.update() 内部有 4ms 节流，且 GT911 的 INT 引脚不低时连 I2C 都不发。
 // ★ 并发安全：Touch_Class 里加了互斥（见 components/m5unified/.../Touch_Class.cpp）。
-// ★ 放在 namespace 里（plugin.h 的声明在 m5ui::plugin 内）——
-//   plugin.cpp 的 `namespace m5ui::plugin {` 在第 926 行，这里是**它的上面**，
+// ★ 放在 namespace 里（plugin.h 的声明在 papers3::plugin 内）——
+//   plugin.cpp 的 `namespace papers3::plugin {` 在第 926 行，这里是**它的上面**，
 //   不自己包一层就会变成全局符号 → 链接期报 undefined reference。
-namespace m5ui::plugin {
+namespace papers3::plugin {
 
 static void touch_sample_task(void*)
 {
@@ -937,7 +1023,7 @@ void touch_task_start()
     xTaskCreatePinnedToCore(touch_sample_task, "tch", 3072, nullptr, 2, nullptr, 1);
 }
 
-}   // namespace m5ui::plugin
+}   // namespace papers3::plugin
 #endif
 
 // ★ 批处理（用户 2026-10-15 建议：用 startWrite/endWrite 包一批次）─────────────
@@ -956,26 +1042,51 @@ extern "C" int so_end_write(void)
 {
     if (!g_write_open) return 0;
     g_write_open = false;
-    if (g_dx1 <= g_dx0) return 0;                       // 这一批什么都没写 → 一次都不推
-    if (g_dx0 < 0)   g_dx0 = 0;                         // 夹到屏内
+    if (g_dx1 <= g_dx0 || g_dy1 <= g_dy0) return 0;     // 这一批什么都没写 → 一次都不推
+    // ★ 先夹到屏内、**再**判空。原顺序是先判空后夹：一批全画在屏右/屏下外侧时
+    //   （布局算出屏外的坐标，很常见）这里会算出负的宽高传给 display()，
+    //   而面板的脏区累计是按"面积"递推的 → 负宽高就是未定义行为。
+    if (g_dx0 < 0)   g_dx0 = 0;
     if (g_dy0 < 0)   g_dy0 = 0;
+    if (g_dx0 > 540) g_dx0 = 540;
+    if (g_dy0 > 960) g_dy0 = 960;
+    if (g_dx1 < 0)   g_dx1 = 0;
+    if (g_dy1 < 0)   g_dy1 = 0;
     if (g_dx1 > 540) g_dx1 = 540;
     if (g_dy1 > 960) g_dy1 = 960;
+    if (g_dx1 <= g_dx0 || g_dy1 <= g_dy0) return 0;     // 夹完什么都不剩 → 不推
     M5.Display.display(g_dx0, g_dy0, g_dx1 - g_dx0, g_dy1 - g_dy0);
     so_wait_display();
     return 1;
 }
 
 // 计时 / 打日志（.so 自测各阶段耗时用）。.so 里没有 esp_timer、也没有 ESP_LOGx。
+extern "C" int so_app_dir(char* out, int cap)
+{
+    if (!out || cap <= 0) return -1;
+    if (!g_app_dir[0]) { out[0] = 0; return -1; }
+    snprintf(out, cap, "%s", g_app_dir);
+    return (int)strlen(out);
+}
+
+// 输入法覆盖层（键盘）的顶边像素 y —— `.so` 排版要让开键盘时问这个，别自己抄常量。
+// 0 = 覆盖层还没建好（IME 没初始化）。
+extern "C" int so_ime_band_y(void)
+{
+    return (int)papers3::pages::g_overlay_top;
+}
+
 extern "C" int64_t so_now_ms(void) { return esp_timer_get_time() / 1000; }
 
 extern "C" void so_log(const char* msg) { ESP_LOGI("SO", "%s", msg ? msg : ""); }
 
-// 追加一行到 /sdcard/apps/reader.log（msg=nullptr → 清空重写）。
-// 有它就不必掐串口时间点：点完随时从网页 /apps/reader.log 取结果。
+// 追加一行到 <appdir>/log.txt（msg=nullptr → 清空重写）。
+// 有它就不必掐串口时间点：点完随时从网页 /apps/<app>/log.txt 取结果。
 extern "C" void so_log_file(const char* msg)
 {
-    FILE* f = fopen("/sdcard/apps/reader.log", msg ? "a" : "w");
+    char path[320];
+    if (!appfile_path("log.txt", path, sizeof(path))) return;
+    FILE* f = fopen(path, msg ? "a" : "w");
     if (!f) return;
     if (msg) fprintf(f, "%s\n", msg);
     fclose(f);
@@ -983,10 +1094,35 @@ extern "C" void so_log_file(const char* msg)
 
 // 退出 app：停掉每帧回调 + 回 launcher
 //（launcher 打开 app 时摘掉了自己的 Visible，这里恢复）。
+// 全局状态栏：label = 左键文字，cb = 左键功能（nullptr = 退出 app）
+static void (*g_bar_cb)(void) = nullptr;
+static bool g_bar_armed = false;            // 按下落在状态栏左键区
+static bool g_bar_owned = false;
+static bool g_app_ticked = false;   // app 的 page_tick 至少跑过一帧（page_init 已收尾）            // app 是否把状态栏交给固件（so_bar_set 过）
+
+extern "C" void so_bar_set(const char* label, void (*cb)(void))
+{
+    g_bar_cb = cb;
+    g_bar_owned = true;
+    papers3::ui::sbar::set(label, nullptr);      // 组件本身不持回调，点击由 plugin 分发
+    papers3::ui::sbar::draw(label);
+}
+
+// 常驻键盘开关（见 so_api.h）；退出 app 时自动复位
+extern "C" void so_ime_set_sticky(int on)
+{
+    papers3::pages::g_overlay_sticky = (on != 0);
+}
+
 extern "C" void so_exit(void)
 {
-    m5ui::plugin::close();
-    m5ui::pages::show(m5ui::pages::g_launcher);
+    papers3::systems::g_trace_until = esp_timer_get_time() + 3000000;   // 3s 内每帧打日志
+    const int64_t t0 = esp_timer_get_time();
+    papers3::plugin::close();
+    const int64_t t1 = esp_timer_get_time();
+    papers3::pages::show(papers3::pages::g_launcher);
+    const int64_t t2 = esp_timer_get_time();
+    ESP_LOGW("PERF", "exit: close=%lldms show=%lldms", (t1 - t0) / 1000, (t2 - t1) / 1000);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1006,7 +1142,7 @@ extern "C" void so_exit(void)
 //   读写能力保留，只为兼容 NVS 里的旧值（别让旧值变成读不出来的孤儿项）。
 int so_fwcfg_get_int(const char* key, int def) {
     if (!key) return def;
-    auto& c = m5ui::cfg::g_cfg;
+    auto& c = papers3::cfg::g_cfg;
     if (!strcmp(key, "size"))     return c.size;
     if (!strcmp(key, "ink"))      return c.ink;
     if (!strcmp(key, "bw"))       return c.bw;
@@ -1026,7 +1162,7 @@ int so_fwcfg_get_int(const char* key, int def) {
 // 范围兜底与 nvs.h::load() 完全一致 —— 越界值一律夹回去，绝不写进 NVS
 int so_fwcfg_set_int(const char* key, int v) {
     if (!key) return 0;
-    auto& c = m5ui::cfg::g_cfg;
+    auto& c = papers3::cfg::g_cfg;
     if (!strcmp(key, "size"))     { if (v < 16) v = 16; if (v > 48) v = 48; c.size = (uint16_t)v; return v; }
     if (!strcmp(key, "ink"))      { if (v < 0) v = 0; if (v > 255) v = 255; c.ink = (uint8_t)v;  return v; }
     if (!strcmp(key, "bw"))       { if (v < 1) v = 1; if (v > 8) v = 8;     c.bw  = (uint8_t)v;  return v; }
@@ -1044,7 +1180,7 @@ int so_fwcfg_set_int(const char* key, int v) {
 }
 
 static char* cfg_str_slot(const char* key, size_t* cap) {
-    auto& c = m5ui::cfg::g_cfg;
+    auto& c = papers3::cfg::g_cfg;
     if (!strcmp(key, "font"))     { *cap = sizeof(c.font);      return c.font; }
     if (!strcmp(key, "wifi_ssid")){ *cap = sizeof(c.wifi_ssid); return c.wifi_ssid; }
     if (!strcmp(key, "wifi_pass")){ *cap = sizeof(c.wifi_pass); return c.wifi_pass; }
@@ -1078,30 +1214,30 @@ int so_fwcfg_set_str(const char* key, const char* v) {
 }
 
 // 一次落盘（多项改完调一次 —— 别一项一个 commit）
-int so_fwcfg_save(void) { return m5ui::cfg::save() ? 0 : -1; }
+int so_fwcfg_save(void) { return papers3::cfg::save() ? 0 : -1; }
 
 // 让改动当场生效：重载字体 + 按需装波形表。
 //   （size/ink/bw/wave_def 是每帧现读，本来就不用 apply）
 void so_fwcfg_apply(void) {
-    auto& c = m5ui::cfg::g_cfg;
-    m5ui::ttf::set_size((float)c.size);
-    if (m5ui::cfg::g_cfg.font[0]) {
+    auto& c = papers3::cfg::g_cfg;
+    papers3::ttf::set_size((float)c.size);
+    if (papers3::cfg::g_cfg.font[0]) {
         char p[200];
         snprintf(p, sizeof(p), "/sdcard/%.180s", c.font);
-        if (!m5ui::ttf::load_from_sd(p, (float)c.size))
+        if (!papers3::ttf::load_from_sd(p, (float)c.size))
             ESP_LOGW("SET", "字体 %s 加载失败（保留原字体）", p);
     } else {
-        m5ui::ttf::load("fonts", (float)c.size);
+        papers3::ttf::load("fonts", (float)c.size);
     }
-    if (!c.wave_def && c.wave_sel != m5ui::epd::TIER_GC13)
-        m5ui::epd::apply_lut(c.wave_sel);
-    m5ui::sound::reload();     // 反馈音：音量 + 音效文件跟着设置走
+    if (!c.wave_def && c.wave_sel != papers3::epd::TIER_GC13)
+        papers3::epd::apply_lut(c.wave_sel);
+    papers3::sound::reload();     // 反馈音：音量 + 音效文件跟着设置走
 }
 
 // 恢复出厂：全部回默认值 → 落盘 → 复位（复位由 app 自己提示，这里只做复位）
 int so_fwcfg_reset(void) {
-    m5ui::cfg::g_cfg = m5ui::cfg::Config{};
-    m5ui::cfg::save();
+    papers3::cfg::g_cfg = papers3::cfg::Config{};
+    papers3::cfg::save();
     ESP_LOGW("SET", "恢复出厂设置，即将复位");
     return 0;
 }
@@ -1109,52 +1245,52 @@ int so_fwcfg_reset(void) {
 // ══════════════════════════════════════════════════════════════════════════
 // 网络：状态 + 开关（给设置 app）
 // ══════════════════════════════════════════════════════════════════════════
-int so_net_state(void)    { return m5ui::wifi_sta::g_state; }   // 0 空闲 1 连接中 2 已连 3 失败
-int so_net_ap_on(void)    { return m5ui::wifi_ap::g_running && m5ui::wifi_ap::g_want_ap ? 1 : 0; }
-int so_net_web_on(void)   { return m5ui::web_files::running() ? 1 : 0; }
-int so_net_auto(void)     { return m5ui::cfg::g_cfg.wifi ? 1 : 0; }
+int so_net_state(void)    { return papers3::wifi_sta::g_state; }   // 0 空闲 1 连接中 2 已连 3 失败
+int so_net_ap_on(void)    { return papers3::wifi_ap::g_running && papers3::wifi_ap::g_want_ap ? 1 : 0; }
+int so_net_web_on(void)   { return papers3::web_files::running() ? 1 : 0; }
+int so_net_auto(void)     { return papers3::cfg::g_cfg.wifi ? 1 : 0; }
 
 // 设备热点开关（会真的拉起/放下 WiFi 驱动）
 int so_net_set_ap(int on) {
-    if (!m5ui::wifi_ap::set_ap(on != 0)) return -1;
-    m5ui::cfg::g_cfg.ap = on ? 1 : 0;
+    if (!papers3::wifi_ap::set_ap(on != 0)) return -1;
+    papers3::cfg::g_cfg.ap = on ? 1 : 0;
     return so_net_ap_on();
 }
 
 // 网页文件服务开关
 int so_net_set_web(int on) {
-    if (on) m5ui::web_files::start();
-    else    m5ui::web_files::stop();
-    m5ui::cfg::g_cfg.web = on ? 1 : 0;
+    if (on) papers3::web_files::start();
+    else    papers3::web_files::stop();
+    papers3::cfg::g_cfg.web = on ? 1 : 0;
     return so_net_web_on();
 }
 
 int so_net_ip(char* out, int cap) {
     if (!out || cap < 4) return -1;
-    const char* p = (m5ui::wifi_sta::g_state == 2) ? m5ui::wifi_sta::g_ip : "";
+    const char* p = (papers3::wifi_sta::g_state == 2) ? papers3::wifi_sta::g_ip : "";
     snprintf(out, cap, "%s", p);
     return (int)strlen(out);
 }
 
 int so_net_ssid(char* out, int cap) {
     if (!out || cap < 4) return -1;
-    snprintf(out, cap, "%s", m5ui::wifi_sta::g_ssid);
+    snprintf(out, cap, "%s", papers3::wifi_sta::g_ssid);
     return (int)strlen(out);
 }
 
 // 用配置里存的 SSID/口令连一次（没有存的就当失败）
 int so_net_connect(void) {
-    if (!m5ui::cfg::g_cfg.wifi_ssid[0]) return -1;
-    return m5ui::wifi_sta::connect(m5ui::cfg::g_cfg.wifi_ssid, m5ui::cfg::g_cfg.wifi_pass) ? 0 : -1;
+    if (!papers3::cfg::g_cfg.wifi_ssid[0]) return -1;
+    return papers3::wifi_sta::connect(papers3::cfg::g_cfg.wifi_ssid, papers3::cfg::g_cfg.wifi_pass) ? 0 : -1;
 }
-void so_net_disconnect(void) { m5ui::wifi_sta::disconnect(); }
+void so_net_disconnect(void) { papers3::wifi_sta::disconnect(); }
 
 // 忘掉已存的热点（清 SSID/口令并落盘）
 void so_net_forget(void) {
-    m5ui::cfg::g_cfg.wifi_ssid[0] = 0;
-    m5ui::cfg::g_cfg.wifi_pass[0] = 0;
-    m5ui::cfg::save();
-    m5ui::wifi_sta::disconnect();
+    papers3::cfg::g_cfg.wifi_ssid[0] = 0;
+    papers3::cfg::g_cfg.wifi_pass[0] = 0;
+    papers3::cfg::save();
+    papers3::wifi_sta::disconnect();
 }
 
 // ── 多热点：扫描 / 已存列表 / 连接 / 忘掉 ──
@@ -1162,7 +1298,7 @@ int so_wifi_scan(char* names, int cap, int max, int8_t* rssi) {
     if (!names || cap < 2 || max <= 0) return 0;
     char tmp[16][33];
     int8_t rt[16];
-    const int n = m5ui::wifi_sta::scan(tmp, rt, max < 16 ? max : 16);
+    const int n = papers3::wifi_sta::scan(tmp, rt, max < 16 ? max : 16);
     for (int i = 0; i < n; ++i) {
         snprintf(names + i * cap, cap, "%s", tmp[i]);
         if (rssi) rssi[i] = rt[i];
@@ -1171,11 +1307,11 @@ int so_wifi_scan(char* names, int cap, int max, int8_t* rssi) {
 }
 int so_wifi_saved(char* names, int cap, int max) {
     if (!names || cap < 2 || max <= 0) return 0;
-    m5ui::wifi_list::load();
+    papers3::wifi_list::load();
     int n = 0;
-    for (int i = 0; i < m5ui::wifi_list::MAX_ENTRIES && n < max; ++i) {
-        if (m5ui::wifi_list::g_entries[i].ssid[0]) {
-            snprintf(names + n * cap, cap, "%s", m5ui::wifi_list::g_entries[i].ssid);
+    for (int i = 0; i < papers3::wifi_list::MAX_ENTRIES && n < max; ++i) {
+        if (papers3::wifi_list::g_entries[i].ssid[0]) {
+            snprintf(names + n * cap, cap, "%s", papers3::wifi_list::g_entries[i].ssid);
             ++n;
         }
     }
@@ -1183,32 +1319,32 @@ int so_wifi_saved(char* names, int cap, int max) {
 }
 int so_wifi_connect(const char* ssid, const char* pass) {
     if (!ssid || !ssid[0]) return -1;
-    m5ui::wifi_list::load();
+    papers3::wifi_list::load();
     char p[65] = "";
-    const int idx = m5ui::wifi_list::find(ssid);
+    const int idx = papers3::wifi_list::find(ssid);
     if (idx >= 0) {
-        snprintf(p, sizeof(p), "%s", m5ui::wifi_list::g_entries[idx].pass);
+        snprintf(p, sizeof(p), "%s", papers3::wifi_list::g_entries[idx].pass);
     } else {
         // 新热点：存下（口令可空 = 开放网络）
-        m5ui::wifi_list::add(ssid, pass);
-        m5ui::wifi_list::save();
+        papers3::wifi_list::add(ssid, pass);
+        papers3::wifi_list::save();
         snprintf(p, sizeof(p), "%s", pass ? pass : "");
     }
     // 同步「上次连的」主字段（开机自动连用）
-    snprintf(m5ui::cfg::g_cfg.wifi_ssid, sizeof(m5ui::cfg::g_cfg.wifi_ssid), "%s", ssid);
-    snprintf(m5ui::cfg::g_cfg.wifi_pass, sizeof(m5ui::cfg::g_cfg.wifi_pass), "%s", p);
-    m5ui::cfg::save();
-    return m5ui::wifi_sta::connect(ssid, p) ? 0 : -1;
+    snprintf(papers3::cfg::g_cfg.wifi_ssid, sizeof(papers3::cfg::g_cfg.wifi_ssid), "%s", ssid);
+    snprintf(papers3::cfg::g_cfg.wifi_pass, sizeof(papers3::cfg::g_cfg.wifi_pass), "%s", p);
+    papers3::cfg::save();
+    return papers3::wifi_sta::connect(ssid, p) ? 0 : -1;
 }
 int so_wifi_forget(const char* ssid) {
     if (!ssid) return -1;
-    m5ui::wifi_list::load();
-    m5ui::wifi_list::remove(ssid);
-    m5ui::wifi_list::save();
-    if (strcmp(m5ui::cfg::g_cfg.wifi_ssid, ssid) == 0) {
-        m5ui::cfg::g_cfg.wifi_ssid[0] = 0;
-        m5ui::cfg::g_cfg.wifi_pass[0] = 0;
-        m5ui::cfg::save();
+    papers3::wifi_list::load();
+    papers3::wifi_list::remove(ssid);
+    papers3::wifi_list::save();
+    if (strcmp(papers3::cfg::g_cfg.wifi_ssid, ssid) == 0) {
+        papers3::cfg::g_cfg.wifi_ssid[0] = 0;
+        papers3::cfg::g_cfg.wifi_pass[0] = 0;
+        papers3::cfg::save();
     }
     return 0;
 }
@@ -1217,9 +1353,18 @@ int so_wifi_forget(const char* ssid) {
 // seed = 预填文本（可 null）；done = 完成回调，收到**固件内部缓冲区**的最终文本，要立刻拷走。
 // 设置页「试听」：重新加载音效并播一遍（不看 snd 开关）
 extern "C" int so_sound_test(void) {
-    m5ui::sound::reload();
-    m5ui::sound::test();
+    papers3::sound::reload();
+    papers3::sound::test();
     return 0;
+}
+
+// 给 shell 的 launch：打开一个 app（内部等价于 launcher 点一行）
+extern "C" int so_app_launch_internal(const char* name)
+{
+    if (!name || !name[0]) return -1;
+    char path[96];
+    snprintf(path, sizeof(path), "apps/%s", name);
+    return papers3::plugin::load_app(path) ? 0 : -1;
 }
 
 // ── 设备上的真 shell（apps/terminal 用）────────────────────────────────
@@ -1227,15 +1372,15 @@ extern "C" int so_sound_test(void) {
 //   *flags bit0 = 已经排了重启。命令实现在 main/platform/sh.h。
 extern "C" int so_sh_exec(const char* line, char* out, int cap, int* code, int* flags) {
     if (!out || cap < 8) return -2;
-    return m5ui::sh::exec(line, out, cap, code, flags);
+    return papers3::sh::exec(line, out, cap, code, flags);
 }
 
 int so_ime_open(const char* seed, void (*done)(const char*), void (*cancel)(void)) {
-    m5ui::pages::g_ime_seed = seed;
-    m5ui::pages::g_ime_done = done;
-    m5ui::pages::g_ime_cancel = cancel;
-    if (!m5ui::pages::g_open_overlay) return -1;
-    m5ui::pages::g_open_overlay();
+    papers3::pages::g_ime_seed = seed;
+    papers3::pages::g_ime_done = done;
+    papers3::pages::g_ime_cancel = cancel;
+    if (!papers3::pages::g_open_overlay) return -1;
+    papers3::pages::g_open_overlay();
     return 0;
 }
 
@@ -1302,6 +1447,8 @@ extern "C" const struct esp_elfsym g_customer_elfsyms[] = {
     ESP_ELFSYM_EXPORT(so_ime_open),
     ESP_ELFSYM_EXPORT(so_sound_test),
     ESP_ELFSYM_EXPORT(so_sh_exec),
+    ESP_ELFSYM_EXPORT(so_app_dir),
+    ESP_ELFSYM_EXPORT(so_ime_band_y),
     ESP_ELFSYM_EXPORT(so_list_files),
     ESP_ELFSYM_EXPORT(so_clock_hhmm),
     ESP_ELFSYM_EXPORT(so_clock_valid),
@@ -1344,12 +1491,14 @@ extern "C" const struct esp_elfsym g_customer_elfsyms[] = {
     ESP_ELFSYM_EXPORT(so_log),
     ESP_ELFSYM_EXPORT(so_log_file),
     ESP_ELFSYM_EXPORT(so_exit),
+    ESP_ELFSYM_EXPORT(so_ime_set_sticky),
+    ESP_ELFSYM_EXPORT(so_bar_set),
     ESP_ELFSYM_END
 };
 
 // ── 加载 ─────────────────────────────────────────────────────────
 
-namespace m5ui::plugin {
+namespace papers3::plugin {
 
 static const char* TAG = "PLUGIN";
 
@@ -1441,13 +1590,15 @@ bool load_app(const char* name)
     // ★ 先核对 API 版本，再决定要不要跑它
     if (!api_check(h, name)) {
         ESP_LOGE(TAG, "%s", g_last_error);
-        return false;
+        dlclose(h);            // ★ page_init 还没跑过 → 卸掉，否则反复点一个版本不符的
+        return false;          //   app 会一次次吃 PSRAM/内部 RAM，最后连 dlopen 都失败
     }
 
     void (*page_init)(void) = (void (*)(void))dlsym(h, "page_init");
     if (!page_init) {
         snprintf(g_last_error, sizeof(g_last_error), "找不到 page_init()：%s", dlerror());
         ESP_LOGE(TAG, "%s", g_last_error);
+        dlclose(h);            // 同上：没跑过任何 app 代码，卸载是安全的
         return false;
     }
 
@@ -1461,6 +1612,19 @@ bool load_app(const char* name)
     g_tap_latch = false;
     g_tap_sent0 = false;
 
+    // 建这个 app 的私有目录（日志/配置/索引都放这儿，/apps 里只留 .so）
+    app_dir_for(name, g_app_dir, sizeof(g_app_dir));
+    if (mkdir(g_app_dir, 0777) != 0) {
+        struct stat st;
+        if (stat(g_app_dir, &st) != 0 || !S_ISDIR(st.st_mode)) ESP_LOGW(TAG, "建目录失败: %s", g_app_dir);
+    }
+    ESP_LOGI(TAG, "app 私有目录: %s", g_app_dir);
+
+    g_app_ticked = false;                     // 新 app：等它的 page_tick 跑过一帧再谈自愈
+    papers3::pages::g_app_front = true;          // 前台是 .so app：输入法收起时别让宿主刷带
+    // ★ 宿主页整页藏掉：否则启动器/状态栏的定时 tick 会把自己的像素画到 app 屏幕上
+    //   （"电池区冒出大号 19:50"就是这么来的）。app 退出时 pages::show(launcher) 会重新挂回来。
+    papers3::pages::hide_current();
     ESP_LOGI(TAG, "调用 %s page_init() ...", name);
     page_init();
     ESP_LOGI(TAG, "%s page_init() 返回", name);
@@ -1483,20 +1647,53 @@ void tick()
 {
     if (!g_app_tick) return;
 
+    // 全局状态栏：每分钟刷时间；左键点了走 app 注册的回调（没有就退出 app）
+    papers3::ui::sbar::tick();
+
+    // ★ 常驻键盘由**宿主**守，不靠 app 自觉：.so 只在第一帧调一次 so_ime_open，
+    //   万一之后被谁收掉（取消回调、异常路径、切页顺带收起覆盖层……），app 没有第二次机会，
+    //   屏上就变成"键盘没出来"。这里每帧看一眼：说好常驻却没开 → 就地补开。
+    // ★ 必须等 app 跑过一帧再自愈：终端开键盘是在 page_tick 里，而 page_init 会把
+    //   60..960 整块铺点阵（键盘区也在里面）。自愈要是抢在 page_init 之前开，
+    //   键盘像素立刻被 page_init 抹平，而容器此后没有 Dirty → 屏上只剩点阵底，
+    //   看起来就是"键盘没出来"（2026-10-22 抓到：show_overlay 比 page_init 返回早 30ms）。
+    if (g_app_ticked && papers3::pages::g_overlay_sticky && !papers3::pages::g_overlay_on && papers3::pages::g_open_overlay) {
+        ESP_LOGW("IME", "常驻键盘不在了 → 自动重开");
+        papers3::pages::g_open_overlay();
+    }
+    {
+        // ★ 这里必须用宿主自己的触摸快照（M5.Touch），**不能**用 so_touch ——
+        //   那是 app 的事件流，读一次就把键盘那一帧的触摸吃掉（实测：有按键音、没响应）。
+        static bool was = false;
+        if (!g_bar_owned) { /* 老 app 自己画/自己处理状态栏：别抢它的触摸 */ }
+        const bool down = g_bar_owned && (M5.Touch.getCount() > 0);
+        if (down) {
+            auto& d = M5.Touch.getDetail(0);
+            if (!was && d.wasPressed()) {
+                was = true;
+                if (papers3::ui::sbar::hits(d.x, d.y)) g_bar_armed = true;
+            }
+        } else if (was) {
+            was = false;
+            if (g_bar_armed) { g_bar_armed = false; if (g_bar_cb) g_bar_cb(); else so_exit(); }
+        }
+    }
+
     // ★ 性能探针（spike）：把这一帧 app 花的字体成本拆成「光栅化 / 落图」。
     //   只在这一帧**真画了字形**时才打日志，所以不会每帧刷屏 ——
     //   按一次按钮画一屏 = 一条，翻一页 = 一条。
     //   （.so 自己那行 `绘制Xms | 推屏Yms` 里的"绘制"就是这里的两个数之和 + 少量杂项。）
-    const int64_t h0 = m5ui::ttf::gcache::hits();
-    const int64_t m0 = m5ui::ttf::gcache::misses();
-    m5ui::ttf::perf_reset();
+    const int64_t h0 = papers3::ttf::gcache::hits();
+    const int64_t m0 = papers3::ttf::gcache::misses();
+    papers3::ttf::perf_reset();
     g_app_tick();
-    const int64_t n = m5ui::ttf::g_perf_glyphs;
+    g_app_ticked = true;
+    const int64_t n = papers3::ttf::g_perf_glyphs;
     if (n > 0) {
-        const int64_t r  = m5ui::ttf::g_perf_raster_us;
-        const int64_t p  = m5ui::ttf::g_perf_push_us;
-        const int64_t dh = m5ui::ttf::gcache::hits()   - h0;
-        const int64_t dm = m5ui::ttf::gcache::misses() - m0;
+        const int64_t r  = papers3::ttf::g_perf_raster_us;
+        const int64_t p  = papers3::ttf::g_perf_push_us;
+        const int64_t dh = papers3::ttf::gcache::hits()   - h0;
+        const int64_t dm = papers3::ttf::gcache::misses() - m0;
         ESP_LOGI(TAG, "绘制拆分: %lld 字形 | 光栅化 %lldus (%.2fms/字) | 落图 %lldus (%.2fms/字) | 光栅占比 %.0f%%"
                       " | 字形缓存 命中%lld/查%lld (%.0f%%) 存%d条%uKB | PSRAM余%uKB",
                  (long long)n,
@@ -1505,7 +1702,7 @@ void tick()
                  (r + p) ? 100.0 * (double)r / (double)(r + p) : 0.0,
                  (long long)dh, (long long)(dh + dm),
                  (dh + dm) ? 100.0 * (double)dh / (double)(dh + dm) : 0.0,
-                 m5ui::ttf::gcache::count(), (unsigned)(m5ui::ttf::gcache::bytes() / 1024),
+                 papers3::ttf::gcache::count(), (unsigned)(papers3::ttf::gcache::bytes() / 1024),
                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     }
 }
@@ -1515,7 +1712,20 @@ void tick()
 void close()
 {
     g_app_tick = nullptr;
+    g_app_ticked = false;
     g_app_handle = nullptr;
+    papers3::pages::g_app_front = false;      // 回到启动器：恢复"宿主自己刷带"
+    // ★ 退出 app 时必须把常驻键盘一起收掉，否则它盖在启动器上（实测 exit 没反应就是这个）
+    papers3::pages::g_overlay_sticky = false;
+    if (papers3::pages::g_overlay_on) {
+        // 这一次不要铺带/起 band：回启动器是整页重画，带会让启动器的整屏底推送被拦掉，
+        // 退出的观感会变成"一块一块往上爬 + 多等 300ms"（终端常驻键盘专属症状）。
+        papers3::pages::g_skip_band = true;
+        papers3::pages::hide_overlay();
+    }
+    g_bar_cb = nullptr;
+    g_bar_armed = false;
+    g_bar_owned = false;
 }
 
 // 是否有 .so app 在跑
@@ -1524,4 +1734,4 @@ bool active()
     return g_app_handle != nullptr;
 }
 
-} // namespace m5ui::plugin
+} // namespace papers3::plugin

@@ -1,9 +1,9 @@
 /*
- * m5ui — ECS UI 框架 demo + 中文拼音输入法（IME）
+ * papers3 — ECS UI 框架 demo + 中文拼音输入法（IME）
  *
  * 目录就按职责分，谁是什么一眼看得出：
  *   main.cpp            入口：初始化 + 建页 + 主循环，就这些
- *   app.h               App：M5 初始化 / World / 主循环（原 m5ui.h）
+ *   app.h               App：M5 初始化 / World / 主循环（原 papers3.h）
  *   ecs/                ECS 内核：world / components
  *   systems/            ECS 系统：flex / touch / render
  *   ui/                 UI 层（组件 + 设计令牌）
@@ -52,12 +52,13 @@
 #include "platform/wifi_ap.h"
 #include "platform/wifi_sta.h"
 #include "platform/web_files.h"
+#include "platform/sercli.h"     // 串口命令行 + 文件传输（插线就能传，不依赖 WiFi）
 #include "platform/sound.h"    // 触摸反馈音：开机按配置加载音量/音效
 #include "systems/epd_lut.h"   // 波形档（开机装表）
 #include "plugin.h"
 #include "text/ime.h"
 
-using namespace m5ui;
+using namespace papers3;
 
 // 上一次的复位原因。放 RTC 不掉电内存：**跨复位有效、断电丢失**，
 // 且不写 flash/不磨 NVS —— 刚好用来回答「刚才是不是崩了重启」。
@@ -92,7 +93,19 @@ static void ui_task(void* arg) {
     App& app = *(App*)arg;
     ESP_LOGI("MAIN", "ui_task 起在 core %d", xPortGetCoreID());
     for (;;) {
+        const int64_t t0 = esp_timer_get_time();
+        systems::g_push_n = 0;
+        systems::g_push_us = 0;
+        systems::g_push_px = 0;
         app.update();
+        const int64_t dt = (esp_timer_get_time() - t0) / 1000;
+        // 平常只报慢帧；trace 窗口内把有推送/有耗时的帧也报出来（空转帧不刷屏）
+        if (dt > 120 || (esp_timer_get_time() < systems::g_trace_until && (systems::g_push_n || dt > 20))) {
+            ESP_LOGW("PERF", "帧 %lldms · 推屏 %u 次 %lldms · 面积 %lldK px（整屏=506K）",
+                     dt, (unsigned)systems::g_push_n,
+                     (long long)(systems::g_push_us / 1000),
+                     (long long)(systems::g_push_px / 1000));
+        }
         pages::flush_band();        // 覆盖层/还原：渲染跑完一趟后用 QUALITY 推那条带
         pages::launcher::tick();    // 顶栏时钟：分钟跳了才重画
         plugin::tick();             // .so app 每帧回调（page_tick）
@@ -153,6 +166,7 @@ extern "C" void app_main() {
     bool ttf_ok = ttf::load("fonts", (float)cfg::g_cfg.size);
     // ── 3) 按 NVS 里的选择加载字体。★ 不自动挑 —— 没选过就用内置 ──
     bool sd_ok = sd::mount();
+    if (sd_ok) sercli::start();      // 串口传文件：SD 挂上就能用，WiFi 断着也没关系
     if (sd_ok) sd::ensure_font_dir();
     if (sd_ok && cfg::g_cfg.font[0]) {
         char path[320];
@@ -172,7 +186,7 @@ extern "C" void app_main() {
     }
 
     // ── 3b) 触摸反馈音：音量 + 音效文件（SD 就绪之后再加载）──
-    m5ui::sound::reload();
+    papers3::sound::reload();
 
     if (ttf_ok) {
         ttf::set_size((float)cfg::g_cfg.size);
@@ -264,5 +278,11 @@ extern "C" void app_main() {
         }
     }
 
-    for (;;) vTaskDelay(pdMS_TO_TICKS(1000));   // core0 主任务空转（WiFi 事件走 sys_evt）
+    // ★ core0 循环：网页服务自愈放在**这里**，不放 ui_task。
+    //   自愈动作是 httpd_stop()+start()，它会等 httpd 任务退出；放 core1 的话
+    //   正好在上传/下载时会把整个 UI 卡住（触摸、渲染全停）。
+    for (;;) {
+        web_files::tick();
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }

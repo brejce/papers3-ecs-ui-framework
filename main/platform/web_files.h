@@ -40,7 +40,7 @@
 #include "freertos/FreeRTOS.h"  // uxTaskGetSystemState → 双核空闲任务计数
 #include "freertos/task.h"
 
-namespace m5ui::web_files {
+namespace papers3::web_files {
 
 static const char* TAG  = "WEB";
 static const char* ROOT = "/sdcard";
@@ -107,14 +107,33 @@ inline bool qget(httpd_req_t* req, const char* key, char* out, size_t cap) {
     return true;
 }
 
+// ── 请求期工作缓冲：**一律放 PSRAM** ───────────────────────────────────
+// 原来这里有三个 4KB 的 static（body / 上传块 / 下载块）= 12KB 常驻**内部 RAM**，
+// 而这颗芯片内部 RAM 只剩十几 KB：跑一阵之后 httpd 建连接、发大响应就分配不到，
+// 表现是「列表 200 但 0 字节」「下载卡住不返回」。
+inline char* wbuf_slot(int slot, size_t need) {
+    static char*  p[12]   = {nullptr};
+    static size_t cap[12] = {0};
+    if (slot < 0 || slot >= 12) return nullptr;
+    if (need > cap[slot]) {
+        if (p[slot]) heap_caps_free(p[slot]);
+        p[slot] = (char*)heap_caps_malloc(need, MALLOC_CAP_SPIRAM);
+        cap[slot] = p[slot] ? need : 0;
+    }
+    return p[slot];
+}
+
 // POST body（application/x-www-form-urlencoded）：**只能读一次**，所以先整份读进来再取键
-static char g_body[4096];
+static char* g_body = nullptr;          // 首次用时从 PSRAM 拿（见 wbuf）
 static int  g_body_len = 0;
+static const int G_BODY_CAP = 4096;
 
 inline bool read_body(httpd_req_t* req) {
     g_body_len = 0;
+    if (!g_body) g_body = wbuf_slot(0, (size_t)G_BODY_CAP);
+    if (!g_body) return false;
     int len = req->content_len;
-    if (len <= 0 || len >= (int)sizeof(g_body)) return false;
+    if (len <= 0 || len >= G_BODY_CAP) return false;
     while (g_body_len < len) {
         int r = httpd_req_recv(req, g_body + g_body_len, len - g_body_len);
         if (r <= 0) { if (r == HTTPD_SOCK_ERR_TIMEOUT) continue; return false; }
@@ -169,7 +188,9 @@ inline esp_err_t back_to(httpd_req_t* req, const char* qpath) {
 // ── 递归删除（非空目录也能删）──
 // 每层一个静态缓冲：HTTP 任务是单线程的，别用栈（递归 + 栈上 1KB 会啃光 8KB 栈）
 inline bool rm_recursive(const char* path, int depth) {
-    static char buf[6][1024];
+    static char* rm = wbuf_slot(9, 6 * 1024);   // PSRAM：6 层 × 1KB 留在内部 RAM 太贵
+    if (!rm) return false;
+    char (*buf)[1024] = (char (*)[1024])rm;
     if (depth >= 6) { ESP_LOGW(TAG, "目录太深，放弃: %s", path); return false; }
 
     struct stat st;
@@ -255,8 +276,19 @@ static esp_err_t h_page(httpd_req_t* req) {
         return ESP_FAIL;
     }
 
-    // 大缓冲都放静态：HTTP 任务是单线程的，别占那 8KB 栈
-    static char pe[800], he[700], ep[1600], row[8192], path[640], ne[900];
+    // 大缓冲放 PSRAM：HTTP 任务单线程，不怕共享；但这组一共 ~13.8KB，
+    // 留在 .bss 就是常驻内部 RAM（这芯片只剩十几 KB）→ 跑一阵网页就 0 字节。
+    char* pe   = wbuf_slot(3, 800);
+    char* he   = wbuf_slot(4, 704);
+    char* ep   = wbuf_slot(5, 1600);
+    char* row  = wbuf_slot(6, 8192);
+    char* path = wbuf_slot(7, 640);
+    char* ne   = wbuf_slot(8, 900);
+    if (!pe || !he || !ep || !row || !path || !ne) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no mem");
+        closedir(d);
+        return ESP_FAIL;
+    }
     char parent[400], penc[800];
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -264,8 +296,8 @@ static esp_err_t h_page(httpd_req_t* req) {
 
     parent_of(qp, parent, sizeof(parent));
     urlenc(parent, penc, sizeof(penc));
-    htmlesc(qp, he, sizeof(he));
-    snprintf(row, sizeof(row),
+    htmlesc(qp, he, 700);
+    snprintf(row, 8192,
              "<header><b>SD 卡</b><div id=\"path\">%s</div></header>"
              "<div class=\"bar\">"
              "<a class=\"b\" href=\"/?path=%s\">↑ 上一级</a>"
@@ -287,10 +319,10 @@ static esp_err_t h_page(httpd_req_t* req) {
         const bool isdir = S_ISDIR(st.st_mode);
 
         // 卡内路径（结尾拼名字）→ 编码/转义两份
-        snprintf(path, sizeof(path), "%s%s%s", qp, (strcmp(qp, "/") == 0 ? "" : "/"), e->d_name);
-        urlenc(path, pe, sizeof(pe));
-        htmlesc(path, ep, sizeof(ep));
-        htmlesc(e->d_name, ne, sizeof(ne));
+        snprintf(path, 640, "%s%s%s", qp, (strcmp(qp, "/") == 0 ? "" : "/"), e->d_name);
+        urlenc(path, pe, 800);
+        htmlesc(path, ep, 1600);
+        htmlesc(e->d_name, ne, 900);
 
         char size[32] = "";
         if (!isdir) {
@@ -306,7 +338,7 @@ static esp_err_t h_page(httpd_req_t* req) {
             strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &tmv);
         }
 
-        snprintf(row, sizeof(row),
+        snprintf(row, 8192,
                  "<tr><td class=\"n\">%s<a href=\"%s%s\">%s</a></td>"
                  "<td class=\"s\">%s</td><td class=\"s\">%s</td>"
                  "<td class=\"a\">"
@@ -441,13 +473,17 @@ static esp_err_t h_dl(httpd_req_t* req) {
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition", cd);
 
-    static char buf[4096];
+    char* buf = wbuf_slot(2, 4096);
+    if (!buf) { fclose(f); httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no mem"); return ESP_FAIL; }
     size_t r;
-    while ((r = fread(buf, 1, sizeof(buf), f)) > 0) {
-        if (httpd_resp_send_chunk(req, buf, r) != ESP_OK) { fclose(f); return ESP_FAIL; }
+    bool bad = false;
+    while ((r = fread(buf, 1, 4096, f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, r) != ESP_OK) { bad = true; break; }
     }
     fclose(f);
+    // ★ 无论成败都要发结束块：不发就等于把连接晾在那儿，浏览器只能一直等（实测症状）
     httpd_resp_send_chunk(req, nullptr, 0);
+    if (bad) { ESP_LOGW(TAG, "下载中断 %s（内部 RAM 不足？）", full); return ESP_FAIL; }
     ESP_LOGI(TAG, "下载 %s", full);
     return ESP_OK;
 }
@@ -473,9 +509,10 @@ static esp_err_t h_ul(httpd_req_t* req) {
     ESP_LOGI(TAG, "上传 %s (%d 字节)", full, (int)req->content_len);
 
     int left = req->content_len;
-    static char buf[4096];
+    char* buf = wbuf_slot(1, 4096);
+    if (!buf) { fclose(f); unlink(full); httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no mem"); return ESP_FAIL; }
     while (left > 0) {
-        int want = left > (int)sizeof(buf) ? (int)sizeof(buf) : left;
+        int want = left > 4096 ? 4096 : left;
         int got = httpd_req_recv(req, buf, want);
         if (got <= 0) {
             if (got == HTTPD_SOCK_ERR_TIMEOUT) continue;
@@ -537,4 +574,30 @@ inline void stop() {
 
 inline bool running() { return g_srv != nullptr; }
 
-} // namespace m5ui::web_files
+// ── 自愈 + 观测 ────────────────────────────────────────────────
+// 症状：跑久了网页「200 但 0 字节」或直接卡死。根子在内部 RAM（只有十几 KB），
+// httpd 建连接/发大响应要内部缓冲，分配不到就半途而废且不报错。
+// 这里每 5s 看一眼内部最大可用块：低到危险就先记一笔、再把 httpd 重建一次恢复现场。
+inline void tick() {
+    static int64_t t_check = 0, t_log = 0, t_heal = 0;
+    const int64_t now = esp_timer_get_time() / 1000;
+    if (now - t_check < 5000) return;
+    t_check = now;
+    const size_t fr  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (fr < 14336 && now - t_log > 60000) {          // 60s 最多一条，别刷屏
+        t_log = now;
+        ESP_LOGW(TAG, "内部 RAM 紧张：free %uB / 最大块 %uB（httpd 可能开始 0 字节）",
+                 (unsigned)fr, (unsigned)big);
+    }
+    // ★ 自愈要限频：内部 RAM 一旦紧张就是长期紧张，不限频就是每 5s 一次
+    //   stop/start —— 每次都会掐断正在传的那条连接，最后看起来像"网页反复抽风"。
+    if (g_srv && big < 6144 && now - t_heal > 30000) {
+        t_heal = now;
+        ESP_LOGW(TAG, "内部最大块只剩 %uB → 重建 httpd 自愈", (unsigned)big);
+        stop();
+        start();
+    }
+}
+
+} // namespace papers3::web_files

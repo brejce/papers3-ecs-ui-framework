@@ -16,7 +16,7 @@
 #include "platform/sd.h"
 #include "so_meta.h"          // apps/common/so_meta.h（CMakeLists 已加 include 路径）
 
-namespace m5ui::apps {
+namespace papers3::apps {
 
 inline constexpr const char* APPS_DIR = "/sdcard/apps";
 
@@ -142,4 +142,4 @@ inline int scan(AppFile* out, int max) {
     return n;
 }
 
-} // namespace m5ui::apps
+} // namespace papers3::apps

@@ -6,7 +6,7 @@
 #include "plugin.h"      // plugin::active() —— .so app 独占时固件不参与命中检测
 #include <M5Unified.h>
 
-namespace m5ui::systems {
+namespace papers3::systems {
 
 // ──────────────────────────────────────────────
 // touch_system — 触摸事件分发
@@ -99,4 +99,4 @@ inline void handle_touch(ecs::World& w) {
     if (d.wasReleased()) release();
 }
 
-} // namespace m5ui::systems
+} // namespace papers3::systems

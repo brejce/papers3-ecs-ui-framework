@@ -1,8 +1,8 @@
-# ECS 实体/组件优化手册（m5ui）
+# ECS 实体/组件优化手册（papers3）
 
-> 编写 2026-10-08。**所有数字都是从目标 ELF 实测**（`nm --size-sort -C build/m5ui.elf`），
+> 编写 2026-10-08。**所有数字都是从目标 ELF 实测**（`nm --size-sort -C build/papers3.elf`），
 > 不是在开发机上量 `sizeof` —— 两者会差一倍（ESP32 指针 4B，开发机 8B）。
-> 适用范围：`~/Project/m5ui/main/ecs/`。
+> 适用范围：`~/Project/papers3/main/ecs/`。
 > 配套文档：`../guide/DEVELOPER.md`（ECS 架构在其附录）、`../display/EPD_TEST_MANUAL.md`。
 
 ---
@@ -48,7 +48,7 @@ static std::array<bool, MAX_ENTITIES>& _has() { ... }   // :134 每类型再加 
 
 ### 1.2 实测：ECS 组件存储合计 = **46.0 KB**
 
-`nm --size-sort -C build/m5ui.elf | grep -E '_store<|_has<'`（**注意 `--size-sort` 输出是十六进制**）：
+`nm --size-sort -C build/papers3.elf | grep -E '_store<|_has<'`（**注意 `--size-sort` 输出是十六进制**）：
 
 | 类型 | 字节/实体 | × 256 |
 |---|---|---|
@@ -69,16 +69,16 @@ static std::array<bool, MAX_ENTITIES>& _has() { ... }   // :134 每类型再加 
 
 对照：`libmain.a` 的 `.bss` = **99,311 B**（≈97KB）→ **ECS 存储占了其中约 47%**。
 
-> **而且 `libmain.a` 几乎就是 m5ui 的全部静态内部 RAM** —— 同一次 `idf.py size-components` 里
+> **而且 `libmain.a` 几乎就是 papers3 的全部静态内部 RAM** —— 同一次 `idf.py size-components` 里
 > `libm5stack__m5gfx.a` 的 `.bss` 只有 **432 B**，其余组件都是 0。
-> 也就是说：**m5ui 的静态内部 RAM ≈ 97KB，其中 ECS 占 46KB（47%）。**
+> 也就是说：**papers3 的静态内部 RAM ≈ 97KB，其中 ECS 占 46KB（47%）。**
 > 想省内部 RAM，ECS 是唯一值得动的地方。
 
 ### 1.3 两个反直觉的实测结论
 
 **① 定义了但没人引用的组件类型，成本是 0 —— 所以"删掉没用的类型省内存"是错的。**
 
-`OnLongPress / Battery / Progress / Interval / Scroll` 在 m5ui 里 **0 处引用**，
+`OnLongPress / Battery / Progress / Interval / Scroll` 在 papers3 里 **0 处引用**，
 它们的 `_store<T>` **根本没被实例化**，不进 `.bss`。**别按"删类型"去优化。**
 
 **② 标记型组件（空结构）只有 `_has` 的 256 B，没有 `_store`。**
@@ -125,7 +125,7 @@ FlexLayout 6,144 + Children 8,704 + FlexItem 1,024 + Parent 512 = 16,384 B = 16.
 |---|---|---|---|
 | **256 实体** | `world.hpp:28` | 手选常数；`destroy()` 不回收槽位 → 是**累计**额度 | 改常数，成本 = 类型数 × ΔN × (sizeof+1) |
 | **32 组件类型** | `world.h:17` + `ComponentMask{uint32_t}` | **真架构限制**（位图位宽） | 要改 `ComponentMask` 位宽，波及 `set/unset/has` |
-| **槽位不回收** | `world.hpp:37-50` | 设计选择（m5ui 从不 `destroy()`，切页只切 `Visible`） | ~10 行加空闲栈 |
+| **槽位不回收** | `world.hpp:37-50` | 设计选择（papers3 从不 `destroy()`，切页只切 `Visible`） | ~10 行加空闲栈 |
 
 ### 溢出的静默失败（最坑）
 
@@ -290,7 +290,7 @@ private:
 ```
 
 **收益**：把 256 从"累计额度"变成"同时存活额度"。
-**但**：只有配合"页面按需建 / 离开销毁"才省内存，而 m5ui 现在是**开机全建、切页只切 `Visible`**
+**但**：只有配合"页面按需建 / 离开销毁"才省内存，而 papers3 现在是**开机全建、切页只切 `Visible`**
 （就是为了切页快）。改成按需建会**每次切页都要重建控件**，代价远大于省的几 KB。
 **所以现阶段不建议做。**
 
@@ -307,14 +307,14 @@ private:
 ## 五、怎么量（每条都能复现）
 
 ```bash
-cd ~/Project/m5ui && source ~/esp-env/env.sh
+cd ~/Project/papers3 && source ~/esp-env/env.sh
 
 # ① 整体静态 RAM
 idf.py build && idf.py size              # 看 Used static DRAM / .bss
 idf.py size-components                   # 看是哪个组件吃掉的
 
 # ② 精确量 ECS 存储（★ --size-sort 输出是【十六进制】）
-nm --size-sort -C build/m5ui.elf | grep -E '_store<|_has<'
+nm --size-sort -C build/papers3.elf | grep -E '_store<|_has<'
 #   期望看到每类型 256×(sizeof+1)；某类型的 _store 不存在 = 被 DCE 了（好事）
 
 # ③ 运行期内部 RAM 余量

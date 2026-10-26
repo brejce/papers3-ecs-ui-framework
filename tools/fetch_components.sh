@@ -1,164 +1,203 @@
 #!/usr/bin/env bash
-# fetch_components.sh — 拉取第三方组件（上游 zip）+ 打上本地补丁
+# fetch_components.sh — 按 components.lock 还原第三方组件（上游原始包 + 本地补丁）
 #
-# ── 为什么要这个脚本 ──────────────────────────────────────────────
-#   components/ 下的 m5gfx / m5unified / elf_loader / cmake_utilities 是**第三方库**
-#   （约 165MB / 1000+ 文件），它们有本地改动，所以不能直接进 git
-#   —— 否则仓库就变成一份几百 MB 的第三方代码副本。
+# ── 一句话 ────────────────────────────────────────────────────────
+#   仓库里**不放**第三方代码（约 165MB / 1000+ 文件），只放两个东西：
+#     · components.lock  —— 钉死版本号 + 补丁的 sha256（唯一权威）
+#     · patches/*.patch  —— 本地改动本身（几十 KB）
+#   这个脚本按 lock 去上游把对应版本拉下来、核对官方校验表、再打上本地补丁。
 #
-#   但又**不能**交给 IDF 组件管理器自动拉：组件管理器会把上游版本重新下载覆盖，
-#   本地补丁就没了（见 main/idf_component.yml 顶部的「血泪教训」）。
-#
-#   解法：第三方代码一律**不进仓库**，用这个脚本按需还原：
-#     1. 从 ESP 组件 registry 下载指定版本的官方 zip（带官方 CHECKSUMS 校验）
-#     2. 解压到 components/<name>/
-#     3. 依次应用 patches/<name>/*.patch（本地改动，只占几十 KB）
-#
-#   脚本幂等：已经在位且补丁已应用的就跳过；--force 强制全部重来。
+#   所以你 clone 别人的仓库后跑一遍这个脚本，拿到的是**和他本机一模一样**的第三方代码
+#   —— 版本不飘、补丁不缺、内容对得上（官方 CHECKSUMS.json 逐文件 sha256 校验）。
 #
 # ── 用法 ─────────────────────────────────────────────────────────
-#   ./tools/fetch_components.sh            # 缺哪个拉哪个
-#   ./tools/fetch_components.sh --force    # 全部重拉重打（升级上游版本后用）
+#   ./tools/fetch_components.sh            # 缺哪个拉哪个（已有且校验通过就跳过）
+#   ./tools/fetch_components.sh --force    # 全部重拉重打（升版本后用）
 #   ./tools/fetch_components.sh m5gfx      # 只处理某一个
+#   ./tools/fetch_components.sh --verify   # 只校验现有 components/（不下载、不改动）
 #
-# ── 升级某个组件的版本 ───────────────────────────────────────────
-#   ① 改下面 COMPONENTS 里的版本号
-#   ② 跑 ./tools/fetch_components.sh --force
-#   ③ 按 patches/README.md 重新生成该组件的补丁
-#   ④ idf.py build 验证
+# ── 升级某个组件 ─────────────────────────────────────────────────
+#   ① 改 components.lock 里的 version（补丁的 sha256 也在这里）
+#   ② ./tools/fetch_components.sh --force <name>
+#   ③ 按 patches/README.md 重生成该组件的补丁，把新 sha256 写回 components.lock
+#   ④ ./tools/fetch_components.sh --verify  +  idf.py build
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 COMPONENTS_DIR="$ROOT/components"
 PATCH_DIR="$ROOT/patches"
-REGISTRY="https://components-file.espressif.com/components"
+LOCK="$ROOT/components.lock"
+VERIFY="$HERE/verify_components.py"
+MANIFESTS="$COMPONENTS_DIR/.manifests"
 
-# 格式： 命名空间/组件名:版本
-#   命名空间/组件名 要跟 registry 上一致（m5stack/m5gfx、espressif/elf_loader …）
-#   版本要跟 components/<名字>/idf_component.yml 里的 version 字段一致
-COMPONENTS=(
-    "m5stack/m5gfx:0.2.29"
-    "m5stack/m5unified:0.2.22"
-    "espressif/elf_loader:1.3.3"
-    "espressif/cmake_utilities:0.5.3"
-)
+[ -f "$LOCK" ] || { echo "✗ 缺 $LOCK —— 它是版本权威，别删"; exit 1; }
 
 force=0
+verify_only=0
 only=""
 for a in "$@"; do
     case "$a" in
-        --force) force=1 ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        --force)  force=1 ;;
+        --verify) verify_only=1 ;;
+        -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
         *) only="$a" ;;
     esac
 done
 
-# 这个组件的补丁是不是已经打上了？
-#   判据：补丁里提到的每个目标文件都存在，且内容里有补丁的标记串。
-patches_applied() {
-    local name="$1" dest="$2"
-    local pdir="$PATCH_DIR/$name"
-    [ -d "$pdir" ] || return 0            # 没补丁 → 视为已就位
-    local p
-    for p in "$pdir"/*.patch; do
-        [ -f "$p" ] || continue
-        local rel marker
-        rel="$(grep -m1 '^+++ ' "$p" | sed 's|^+++ b/||')"
-        marker="$(grep -m1 '^+++ ' "$p" | sed 's|^+++ b/||')"
-        [ -f "$dest/$rel" ] || return 1
-        # 补丁文件里只要有新增行（以 + 开头且不是 +++），就拿它当标记
-        local added
-        added="$(grep -m1 '^+[^+]' "$p" | cut -c2- | sed 's/[[:space:]]*$//')"
-        [ -n "$added" ] || continue
-        grep -qF -- "$added" "$dest/$rel" || return 1
-    done
-    return 0
+# 从 components.lock 读清单（TSV：name \t namespace \t version）
+lock_tsv() {
+    python3 - "$LOCK" <<'PY'
+import json, sys
+lock = json.load(open(sys.argv[1], encoding="utf-8"))
+print(lock["registry"])
+for c in lock["components"]:
+    print(f"{c['name']}\t{c['namespace']}\t{c['version']}")
+PY
+}
+# 某个组件的补丁路径（按 lock 里的顺序）
+lock_patches() {
+    python3 - "$LOCK" "$1" <<'PY'
+import json, sys
+lock = json.load(open(sys.argv[1], encoding="utf-8"))
+for c in lock["components"]:
+    if c["name"] == sys.argv[2]:
+        for p in c.get("patches", []):
+            print(p["path"])
+PY
+}
+# 某个组件安装时要删掉的上游子目录（lock 里的 prune）
+lock_prune() {
+    python3 - "$LOCK" "$1" <<'PY'
+import json, sys
+lock = json.load(open(sys.argv[1], encoding="utf-8"))
+for c in lock["components"]:
+    if c["name"] == sys.argv[2]:
+        for p in c.get("prune", []):
+            print(p)
+PY
+}
+# git 来源（一次一条：name \t url \t dest \t member \t marker）
+lock_git() {
+    python3 - "$LOCK" <<'PY'
+import json, sys
+lock = json.load(open(sys.argv[1], encoding="utf-8"))
+for g in lock.get("git_sources", []):
+    print("\t".join([g["name"], g["url"], g["dest"], g["member"], g["marker"]]))
+PY
 }
 
+if [ "$verify_only" -eq 1 ]; then
+    echo "── 只校验现有 components/ ──"
+    python3 "$VERIFY" patches
+    python3 "$VERIFY" installed ${only:+"$only"}
+    exit $?
+fi
+
+# 补丁文件本身先对账（改了补丁却忘了同步 lock → 现在就炸，别等打歪）
+python3 "$VERIFY" patches >/dev/null
+
+REGISTRY="$(lock_tsv | head -1)"
+mkdir -p "$MANIFESTS"
+
 fetch_one() {
-    local ns="$1" name="$2" ver="$3"
+    local name="$1" ns="$2" ver="$3"
     local dest="$COMPONENTS_DIR/$name"
     local url="$REGISTRY/$ns/$name/$ver/${ns}__${name}-v${ver}.zip"
-    local tmpzip="$COMPONENTS_DIR/.${name}-${ver}.zip"
+    local sums="$REGISTRY/$ns/$name/$ver/CHECKSUMS.json"
+    local manifest="$MANIFESTS/$name-$ver.json"
 
-    if [ "$force" -eq 0 ] && [ -d "$dest" ] && patches_applied "$name" "$dest"; then
-        echo "✓ $name $ver 已在位（补丁已应用）"
+    if [ "$force" -eq 0 ] && [ -d "$dest" ] && python3 "$VERIFY" installed "$name" >/dev/null 2>&1; then
+        echo "✓ $name $ver 已在位（版本/补丁校验通过）"
         return 0
     fi
 
     echo "↓ 拉取 $ns/$name $ver …"
-    rm -rf "$dest"
-    mkdir -p "$dest"
-    curl -fsSL -A "Mozilla/5.0" -o "$tmpzip" "$url"
+    local tmp
+    tmp="$(mktemp -d)"
+
+    curl -fsSL -A "Mozilla/5.0" -o "$tmp/pkg.zip" "$url"
     # registry 的 zip **根目录就是组件根**（没有 <ns>__<name>-v<ver>/ 这层）
-    unzip -q "$tmpzip" -d "$dest"
-    rm -f "$tmpzip"
-    # registry 的 zip 里权限位是 0600，统一放开成 0644（构建和 git 都需要）
-    chmod -R u+rwX,go+rX "$dest"
+    unzip -q "$tmp/pkg.zip" -d "$tmp/tree"
 
-    # 官方 CHECKSUMS.json（组件管理器用它校验），顺便记录 .component_hash
-    local sums="https://components-file.espressif.com/components/$ns/$name/$ver/CHECKSUMS.json"
-    if curl -fsSL -A "Mozilla/5.0" -o "$dest/CHECKSUMS.json" "$sums" 2>/dev/null; then
+    # ── 官方校验表：先存一份到 components/.manifests/，再核原始树 ──
+    if curl -fsSL -A "Mozilla/5.0" -o "$manifest" "$sums" 2>/dev/null; then
         echo "  · 取到官方 CHECKSUMS.json"
+        if ! python3 "$VERIFY" pristine "$tmp/tree" "$manifest"; then
+            echo "✗ $name $ver 的下载内容和官方校验表不符 —— 拒绝安装。" >&2
+            echo "  （上游内容被替换？网络劫持？还是 registry 那边重发了同一个版本号）" >&2
+            exit 1
+        fi
     else
-        rm -f "$dest/CHECKSUMS.json"
+        rm -f "$manifest"
+        echo "  ⚠ 拿不到官方 CHECKSUMS.json —— 这次没法逐文件校验（靠 HTTPS + 版本号兜底）"
     fi
 
-    # 打补丁
-    if [ -d "$PATCH_DIR/$name" ]; then
-        local p
-        for p in "$PATCH_DIR/$name"/*.patch; do
-            [ -f "$p" ] || continue
-            echo "  ⊕ 应用 $(basename "$p")"
-            patch -p1 -d "$dest" --forward --batch < "$p"
-        done
-    fi
+    rm -rf "$dest"
+    mkdir -p "$(dirname "$dest")"
+    mv "$tmp/tree" "$dest"
+    chmod -R u+rwX,go+rX "$dest"
+    rm -rf "$tmp"
+
+    # 按 lock 的 prune 删掉不参与构建的上游子目录（例如 cmake_utilities/test_apps）
+    local pr
+    while IFS= read -r pr; do
+        [ -n "$pr" ] || continue
+        rm -rf "${dest:?}/$pr"
+        echo "  · 删掉 $pr（lock 里的 prune）"
+    done < <(lock_prune "$name")
+
+    # ── 打补丁：打不上就立刻停，绝不"跳过继续" ──
+    local p
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        local pf="$ROOT/$p"
+        if patch -p1 --dry-run --batch --forward -d "$dest" < "$pf" >/dev/null 2>&1; then
+            echo "  ⊕ 应用 $(basename "$pf")"
+            patch -p1 --batch --forward --no-backup-if-mismatch -d "$dest" < "$pf"
+        elif patch -p1 --dry-run --batch --reverse -d "$dest" < "$pf" >/dev/null 2>&1; then
+            echo "  · 已应用过，跳过 $(basename "$pf")"
+        else
+            echo "✗ 补丁打不上：$p" >&2
+            echo "  上游源码和补丁对不上（版本换了？）—— 先改 components.lock 的 version，" >&2
+            echo "  再按 patches/README.md 重新生成补丁，别硬来。" >&2
+            exit 1
+        fi
+    done < <(lock_patches "$name")
+
     echo "✓ $name $ver 就绪"
 }
 
 changed=0
-for c in "${COMPONENTS[@]}"; do
-    ver="${c##*:}"                # 最后一个冒号后面是版本
-    path="${c%:*}"                # 前面是 命名空间/组件名
-    ns="${path%%/*}"              # 命名空间
-    name="${path##*/}"            # 组件名
+while IFS=$'\t' read -r name ns ver; do
+    [ -n "${name:-}" ] || continue
     if [ -n "$only" ] && [ "$only" != "$name" ]; then continue; fi
-    fetch_one "$ns" "$name" "$ver"
+    fetch_one "$name" "$ns" "$ver"
     changed=1
-done
+done < <(lock_tsv | tail -n +2)
 
-# ── stb_truetype.h ────────────────────────────────────────────────
-# 第三方单文件库（public domain，Sean Barrett）。本地**没有改动**，
-# 就是上游那一份 —— 所以也不进仓库，跟其他第三方代码一起拉。
-#   注意：stb_truetype.h 的实现宏定义在 main/ttf_impl.cpp（STB_TRUETYPE_IMPLEMENTATION），
-#   头文件本身原样放 main/third_party/ 就行。
-#
-#   取的是 tarball 而不是 raw.githubusercontent（后者在部分网络下连不上）。
-STB_COMMIT="6e9f34d5429cf16790ec43c9bac3f1ee4ad1f760"   # v1.26
-STB_URL="https://codeload.github.com/nothings/stb/tar.gz/$STB_COMMIT"
-STB_DEST="$ROOT/main/third_party/stb_truetype.h"
-
-if [ -z "$only" ] || [ "$only" = "stb_truetype" ]; then
-    if [ "$force" -eq 0 ] && [ -f "$STB_DEST" ] && \
-       grep -q "stb_truetype.h - v1.26" "$STB_DEST" 2>/dev/null; then
-        echo "✓ stb_truetype.h 已在位"
-    else
-        echo "↓ 拉取 stb_truetype.h (v1.26, public domain) …"
-        tmp="$(mktemp -d)"
-        curl -fsSL -A "Mozilla/5.0" -o "$tmp/stb.tar.gz" "$STB_URL"
-        tar -xzf "$tmp/stb.tar.gz" -C "$tmp"
-        mkdir -p "$(dirname "$STB_DEST")"
-        cp "$tmp"/stb-*/stb_truetype.h "$STB_DEST"
-        rm -rf "$tmp"
-        echo "✓ stb_truetype.h 就绪"
+# ── git 来源（stb_truetype 这类单文件第三方库）────────────────────
+while IFS=$'\t' read -r gname gurl gdest gmember gmarker; do
+    [ -n "${gname:-}" ] || continue
+    if [ -n "$only" ] && [ "$only" != "$gname" ]; then continue; fi
+    dest="$ROOT/$gdest"
+    if [ "$force" -eq 0 ] && [ -f "$dest" ] && grep -q "$gmarker" "$dest" 2>/dev/null; then
+        echo "✓ $gname 已在位（$gmarker）"
+        changed=1
+        continue
     fi
+    echo "↓ 拉取 $gname（$gmarker）…"
+    tmp="$(mktemp -d)"
+    curl -fsSL -A "Mozilla/5.0" -o "$tmp/src.tar.gz" "$gurl"
+    tar -xzf "$tmp/src.tar.gz" -C "$tmp"
+    mkdir -p "$(dirname "$dest")"
+    cp "$tmp"/*/"$gmember" "$dest"
+    rm -rf "$tmp"
+    echo "✓ $gname 就绪 → $gdest"
     changed=1
-fi
+done < <(lock_git)
 
-if [ "$changed" -eq 0 ]; then
-    echo "没有要处理的组件。"
-fi
+[ "$changed" -eq 1 ] || echo "没有要处理的组件。"
 
 # dependencies.lock 里记的是**绝对路径**（组件管理器生成的），
 # 换机器 / 换目录后就是死路径，会让解析失败。组件变动后清掉它，下次 build 自动重生成。
@@ -168,4 +207,5 @@ if [ -f "$ROOT/dependencies.lock" ]; then
 fi
 
 echo
-echo "完成。第三方组件在 components/ 下（**不进 git**），仓库里只留 patches/。"
+echo "完成。第三方组件在 components/ 下（**不进 git**）；版本清单见 components.lock。"
+echo "随时复验：./tools/fetch_components.sh --verify"

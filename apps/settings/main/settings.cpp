@@ -31,52 +31,12 @@ static const uint8_t  GRAYD = 90;            // 禁用/说明的浅灰
 
 static const int MQ = 1, MT = 2, MF = 3, MX = 4;   // QUALITY/TEXT/FAST/FASTEST
 
-// 字号分类（默认 = 原写死值）。运行时可变，存 /sdcard/apps/settings_sz.cfg。
-static int SZ_BAR = 20, SZ_HERO = 38, SZ_SUB = 20, SZ_H = 20,
-           SZ_KEY = 22, SZ_VAL = 22, SZ_SEG = 21, SZ_BTN = 24,
-           SZ_LOG = 22, SZ_CMT = 19;
-
-struct SzCat { const char* cn; const char* hint; int* v; int lo; int hi; };
-static SzCat g_szcat[10] = {
-    {"状态栏",   "顶栏时钟", &SZ_BAR,  14, 32},
-    {"大字标题", "CONFIG",  &SZ_HERO, 22, 56},
-    {"副标题",   "//说明",   &SZ_SUB,  14, 32},
-    {"小标题",   "//WIFI",   &SZ_H,    14, 32},
-    {"键名",     "STATE键",  &SZ_KEY,  14, 40},
-    {"正文",     "菜单列表", &SZ_VAL,  14, 40},
-    {"开关",     "OFF/ON",   &SZ_SEG,  14, 40},
-    {"按钮",     "COMMIT",   &SZ_BTN,  16, 44},
-    {"日志",     ">提示",     &SZ_LOG,  14, 40},
-    {"注释",     "说明小字", &SZ_CMT,  12, 36},
-};
-static const int SZ_N = 10;
-static const int SZ_UI = 22;   // 微调页自身的固定字号（不跟被调字号跑）
-
-static int atoi2(const char* s) {
-    int v = 0;
-    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); ++s; }
-    return v;
-}
-static void sz_save(void) {
-    char buf[256]; int off = 0;
-    for (int i = 0; i < SZ_N; ++i)
-        off += so_snprintf(buf + off, sizeof(buf) - off, "%d ", *g_szcat[i].v);
-    so_blob_save("settings_sz.cfg", buf, off);
-}
-static void sz_load(void) {
-    char buf[256] = "";
-    if (so_blob_load("settings_sz.cfg", buf, sizeof(buf)) <= 0) return;
-    char* p = buf;
-    for (int i = 0; i < SZ_N; ++i) {
-        while (*p == ' ') ++p;
-        if (*p < '0' || *p > '9') return;
-        int v = atoi2(p);
-        while (*p >= '0' && *p <= '9') ++p;
-        if (v < g_szcat[i].lo) v = g_szcat[i].lo;
-        if (v > g_szcat[i].hi) v = g_szcat[i].hi;
-        *g_szcat[i].v = v;
-    }
-}
+// ★ 2026-10-22 用户要求：**不再给用户调字号**。所有分类字号固定在键盘字形大小（34px）之上：
+//   比键盘小的统一抬到 34，比键盘大的（HERO 38）保留。阅读/监控两个 app 有自己的字号设置，
+//   不读这里，保持可调（作为阅读 app 确实需要）。
+static const int SZ_BAR = 22, SZ_HERO = 38, SZ_SUB = 22, SZ_H = 22,
+                 SZ_KEY = 22, SZ_VAL = 22, SZ_SEG = 22, SZ_BTN = 22,
+                 SZ_LOG = 22, SZ_CMT = 22;
 
 static void* g_font = nullptr;
 static int   g_push_n = 0;
@@ -737,22 +697,10 @@ static void draw_disp(void) {
 // ══════════════════════════════════════════════════════════════
 // 字体页（合并：全局基准字号 + 字体文件入口 + app 分类字号微调）
 // ══════════════════════════════════════════════════════════════
-static void szrow_draw(int idx);   // 前向声明：定义在下方「分类字号」段，本页要用
-
 static void draw_font(void) {
     bar_static(0);
-    draw_hero("CONFIG / FONT", "// 基准字号 · 字体文件 · 分类微调");
+    draw_hero("CONFIG / FONT", "// 字体文件 · 字号已固定 34px");
     g_nseg = 0; g_nli = 0; g_nact = 0;
-
-    // ── 全局正文基准（写 NVS size）──
-    draw_h(168, "// BASE (全局正文)");
-    const char* SN[3] = { "24", "28", "34" };
-    const int SZV[3] = { 24, 28, 34 };
-    for (int i = 0; i < 3; ++i) {
-        const R r = {PADX + i * (160 + 6), 194, 160, 44};
-        draw_seg(r, SN[i], cfg_i("size", 28) == SZV[i]);
-        g_seg[g_nseg++] = (Seg){r, K_SIZE, SZV[i], SN[i]};
-    }
 
     // ── 字体文件（收起一行，点进选择页）──
     draw_h(250, "// FONT FACE");
@@ -771,11 +719,7 @@ static void draw_font(void) {
     text(rf.x + rf.w - 24, fty, ">", INK, 1);
     g_act[g_nact++] = (Act){rf, ACT_FACE};
 
-    // ── 设置 app 自身的分类字号（10 行 [-] [+]）──
-    draw_h(332, "// APP 分类字号");
-    for (int i = 0; i < SZ_N; ++i) szrow_draw(i);
-
-    draw_cmt(748, "tap [-] / [+] 调字号 · 改动即存");
+    draw_cmt(748, "字号固定 34px（= 键盘字形）· 只有 FONT FACE 可换");
     draw_log(774, "各页即时生效 · FONT FACE 换字体文件", GRAY);
     draw_commit(0);
 }
@@ -919,7 +863,7 @@ static void draw_about(void) {
     so_snprintf(font, sizeof(font), "%s · %dPX", f[0] ? "SD" : "BUILTIN", cfg_i("size", 28));
 
     const char* KEYS[7] = { "FIRMWARE", "FONT", "RESOLUTION", "PANEL", "SRAM", "PSRAM", "CPU" };
-    const char* VALS[7] = { "m5ui 1.0.0", font, "540 x 960", "8BIT EPD · 16 GRAY", sram, psram, cpu };
+    const char* VALS[7] = { "papers3 1.0.0", font, "540 x 960", "8BIT EPD · 16 GRAY", sram, psram, cpu };
     for (int i = 0; i < 7; ++i) draw_kv(196 + i * 52, KEYS[i], VALS[i]);
 
     draw_h(590, "// BUILD");
@@ -928,60 +872,6 @@ static void draw_about(void) {
     draw_log(710, "panic = 0", INK);
     draw_log(740, "墨水屏效果必须肉眼看", GRAY);
     draw_warn(820, "[ END OF CONFIG ]", 18);
-}
-
-// ══════════════════════════════════════════════════════════════
-// 字号微调页（设置 app 自身的字号）
-// ══════════════════════════════════════════════════════════════
-struct SzRow { R minus, plus; };
-static SzRow g_szrow[10];
-
-static void szrow_draw(int idx) {
-    const SzCat& c = g_szcat[idx];
-    const int y = 358 + idx * 38;
-    const int bw = 44, h = 36;
-    const R rp = {SCR_W - PADX - bw * 2 - 10, y, bw, h};   // [-]
-    const R rm = {SCR_W - PADX - bw, y, bw, h};            // [+]
-    frame(rp, 1, INK);
-    so_font_set_size(g_font, SZ_UI);
-    text(rp.x + (rp.w - text_w("-", SZ_UI, 1)) / 2, rp.y + (h - m_lh(SZ_UI)) / 2, "-", INK, 1);
-    frame(rm, 1, INK);
-    text(rm.x + (rm.w - text_w("+", SZ_UI, 1)) / 2, rm.y + (h - m_lh(SZ_UI)) / 2, "+", INK, 1);
-    char b[16];
-    so_snprintf(b, sizeof(b), "%dpx", *c.v);
-    so_font_set_size(g_font, SZ_UI);
-    const int vx = rp.x - 12 - text_w(b, SZ_UI, 1);
-    text(vx, y + (h - m_lh(SZ_UI)) / 2, b, INK, 1);
-    // 分类名：用它**自己的字号**画 = 活样例（改了当场变大变小）
-    // ✱ 但要夹在行高里：56px 的名字画进 36px 的行会压到上下两行（重叠）
-    const int spx = (*c.v > h - 8) ? (h - 8) : (*c.v);
-    so_font_set_size(g_font, (float)spx);
-    text(PADX, y + (h - m_lh(spx)) / 2, c.cn, GRAY, 1);
-    int lx = PADX + text_w(c.cn, spx, 1) + 8;
-    // 用法提示（固定小字，说明它管的是哪块）
-    if (c.hint[0]) {
-        so_font_set_size(g_font, SZ_UI);
-        text(lx, y + (h - m_lh(SZ_UI)) / 2, c.hint, GRAYD, 1);
-        lx += text_w(c.hint, SZ_UI, 1) + 10;
-    }
-    dot_leader(lx, vx - 10, y + (h - m_lh(SZ_UI)) / 2, SZ_UI);
-    g_szrow[idx].minus = rp;
-    g_szrow[idx].plus = rm;
-}
-static void redraw_szrow(int idx) {
-    const int y = 358 + idx * 38;
-    so_set_epd_mode(MF); box(PADX, y, SCR_W - 2 * PADX, 36, L14);
-    so_set_epd_mode(MT);
-    szrow_draw(idx);
-    push((R){PADX, y, SCR_W - 2 * PADX, 36}, "字号行");
-}
-static int sz_hit(int x, int y) {
-    for (int i = 0; i < SZ_N; ++i) {
-        const SzRow& r = g_szrow[i];
-        if (x >= r.minus.x && x < r.minus.x + r.minus.w && y >= r.minus.y && y < r.minus.y + r.minus.h) return i * 2;
-        if (x >= r.plus.x  && x < r.plus.x  + r.plus.w  && y >= r.plus.y  && y < r.plus.y  + r.plus.h)  return i * 2 + 1;
-    }
-    return -1;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1121,7 +1011,6 @@ void page_init(void) {
     so_log_file("===== settings 新会话 =====");
     g_font = so_font_builtin(13.0f);
     if (!g_font) { so_log("settings: 内置字体加载失败"); return; }
-    sz_load();
     g_bat = so_battery_level();
     g_pg = PG_MENU;
     g_need_full = 1;
@@ -1268,20 +1157,6 @@ void page_tick(void) {
                 }
             }
         } else {
-            // 合并后的 FONT 页：先处理 10 行分类字号的 [-] / [+]（没点中就走下面的段式/按钮/列表）
-            if (g_pg == PG_FONT) {
-                const int h2 = sz_hit(x, y);
-                if (h2 >= 0) {
-                    const int idx = h2 / 2, is_plus = h2 % 2;
-                    int* pv = g_szcat[idx].v;
-                    *pv += is_plus ? 1 : -1;
-                    if (*pv < g_szcat[idx].lo) *pv = g_szcat[idx].lo;
-                    if (*pv > g_szcat[idx].hi) *pv = g_szcat[idx].hi;
-                    sz_save();
-                    redraw_szrow(idx);
-                    goto done;
-                }
-            }
             // 子页：COMMIT → 段式 → 开关 → 动作 → 列表，全部局部刷新
             if (x >= g_commit.x && x < g_commit.x + g_commit.w && y >= g_commit.y && y < g_commit.y + g_commit.h) {
                 draw_commit(1); push(g_commit, "按下"); g_press_c = now;

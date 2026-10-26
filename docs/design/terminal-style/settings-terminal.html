@@ -114,7 +114,7 @@ S.push({n:'05 屏保 · config.screensaver()',h:BAR().replace('20:20','20:20')+`
  +`<div class="a btn">COMMIT</div>`});
 // 6 关于
 S.push({n:'06 关于 · config.about()',h:BAR()+HERO('config.','about','();','固件 / 分区 / 实体')
- +[['FIRMWARE','m5ui 1.0.0'],['PARTITION','factory 3M / fonts 3M'],['FONT','BUILTIN · 28PX'],['RESOLUTION','540 x 960'],['PANEL','8BIT EPD · 16 GRAY'],['WAVEFORM','PER-WIDGET AUTO'],['ENTITIES','132 / 256']].map((r,i)=>R(196+i*52,r[0],r[1])).join('')
+ +[['FIRMWARE','papers3 1.0.0'],['PARTITION','factory 3M / fonts 3M'],['FONT','BUILTIN · 28PX'],['RESOLUTION','540 x 960'],['PANEL','8BIT EPD · 16 GRAY'],['WAVEFORM','PER-WIDGET AUTO'],['ENTITIES','132 / 256']].map((r,i)=>R(196+i*52,r[0],r[1])).join('')
  +H(590,'// BUILD')+`<div class="a log" style="top:618px">&gt; idf.py build</div><div class="a log" style="top:648px">&gt; idf.py -p /dev/ttyACM0 flash</div>`
  +`<div class="a log n" style="top:710px">&gt; panic = 0</div><div class="a log" style="top:740px">&gt; 墨水屏效果必须肉眼看</div>`
  +`<div class="a warn" style="top:820px;font-size:18px">[ END OF CONFIG ]</div>`});

@@ -38,7 +38,7 @@
 #include <cstdint>
 #include <cstddef>
 
-namespace m5ui::epd {
+namespace papers3::epd {
 
 // 档位编号（0 = 默认，不在可选列表里）
 inline constexpr uint8_t TIER_DEFAULT = 0;
@@ -62,4 +62,4 @@ uint8_t     tier_epd_mode(uint8_t t);   // → EPDMode 组件值 1=QUALITY 2=TEX
 // ★ 只能在推屏空闲时调。
 bool apply_lut(uint8_t t);
 
-} // namespace m5ui::epd
+} // namespace papers3::epd

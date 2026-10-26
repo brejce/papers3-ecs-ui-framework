@@ -1,4 +1,4 @@
-# m5ui
+# papers3-ecs-ui-framework
 
 > **📖 文档总索引：[`docs/README.md`](docs/README.md)** —— 一个问题域一份权威，先在那找。
 >
@@ -60,11 +60,11 @@ System（系统）    = 按组件组合查询实体、并执行一件事的函�
 ## 文件结构
 
 ```
-m5ui/
+papers3-ecs-ui-framework/
 ├── CMakeLists.txt              ← ESP-IDF 工程根
 ├── partitions.csv              ← 自定义分区表（含 3MB fonts 分区，给 TTF 用）
 ├── sdkconfig / sdkconfig.defaults
-├── pinyin.idx                  ← 可升级的拼音词库（拷到 SD 卡 /m5ui/pinyin.idx）
+├── pinyin.idx                  ← 可升级的拼音词库（拷到 SD 卡 /papers3/pinyin.idx）
 ├── ttf——file/                   ← 字体源文件（HarmonyOS_SansSC-subset.ttf 等）
 ├── main/                       ← 固件（宿主）
 │   ├── main.cpp                ← app_main()：初始化 + ui_task 钉 core1
@@ -94,7 +94,8 @@ m5ui/
 │   ├── settings/               ← 设置六屏 + 子页
 │   ├── terminal/               ← 终端三屏
 │   └── reader/                 ← 阅读器
-├── components/                 ← ★ 第三方组件（**不在 git 里**，跑 tools/fetch_components.sh 拉）
+├── components.lock             ← ★ 第三方组件锁定清单（版本号 + 补丁 sha256，**进 git**）
+├── components/                 ← ★ 第三方组件（**不在 git 里**，跑 tools/fetch_components.sh 按 lock 还原）
 │                                 m5gfx / m5unified / elf_loader / cmake_utilities
 ├── patches/                    ← ★ 对第三方库的本地改动（5 个文件的 diff，进 git）
 ├── tools/                      ← 字体裁剪 / 拼音索引 / 屏保出图 / 分章扫描 / 拉组件
@@ -110,9 +111,14 @@ m5ui/
 ## 构建
 
 ```bash
-# ★ 第一次 clone 后先拉第三方组件（m5gfx / m5unified / elf_loader / cmake_utilities）
-#   它们不在 git 里 —— 仓库只留我们的本地改动（patches/）
+# ★ 第一次 clone 后先还原第三方组件（m5gfx / m5unified / elf_loader / cmake_utilities）
+#   它们不在 git 里 —— 仓库只留 components.lock（钉死版本）+ patches/（我们的改动）。
+#   脚本按 lock 去上游拉对应版本，先拿官方 CHECKSUMS.json 逐文件核 sha256，再打本地补丁；
+#   版本不对 / 内容被换 / 补丁打不上，都会当场报错，不会"跳过继续"。
 ./tools/fetch_components.sh
+
+# 校验现在这套第三方代码就是 lock 里那一版（不下载、不改动）
+./tools/fetch_components.sh --verify
 
 # 指定芯片型号并编译烧录
 idf.py set-target esp32s3
@@ -128,8 +134,8 @@ cd apps/settings && ./build.sh
 #include "app.h"
 #include "ui/widgets.h"
 
-using namespace m5ui;
-using namespace m5ui::ui::widgets;
+using namespace papers3;
+using namespace papers3::ui::widgets;
 
 void on_click(void* ctx) {
     // 处理点击

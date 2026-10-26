@@ -19,7 +19,7 @@
 #include <cstdlib>
 #include "esp_heap_caps.h"
 
-namespace m5ui::md {
+namespace papers3::md {
 
 enum Kind : uint8_t {
     PARA = 0, H1, H2, H3, H4, H5, H6, BULLET, ORDER, QUOTE, CODE, HR
@@ -244,4 +244,4 @@ inline int inline_spans(const char* text, Span* out, int max_n) {
     return n;
 }
 
-} // namespace m5ui::md
+} // namespace papers3::md

@@ -1,6 +1,6 @@
 # `.so` 应用开发手册（建 · 编 · 传 · 验）
 
-> **这份管什么**：怎么给 m5ui 写一个新的原生应用（`.so`）、怎么编、怎么传上设备、怎么验。
+> **这份管什么**：怎么给 papers3 写一个新的原生应用（`.so`）、怎么编、怎么传上设备、怎么验。
 > **不在这份里**：界面长什么样 → `../design/UI_DESIGN.md`；插件加载器的符号解析机制 → `../architecture/ELF_PLUGIN_ARCHITECTURE.md`。
 > 整理：2026-10-19（吸收了原 `design/terminal-style/STYLE.md` §11 部署须知）。
 
@@ -38,6 +38,23 @@ apps/
 ```
 
 **每个 app 的界面代码是自持的** —— 风格 helper（`draw_hero`/`draw_seg`/`draw_li`…）在各自 `.cpp` 里实现一份，`apps/common/` 只有 `so_api.h` 和 `so_meta.h`（见 `UI_DESIGN.md` §0 的警告）。
+
+### 1.1 设备上的摆放规矩：`/apps` 里**只放 `.so`**
+
+```
+/sdcard/apps/               ← 只放 .so，一眼看过去就是"装了哪些 app"
+  reader.so  settings.so  terminal.so  monitor.so
+  reader/                   ← 阅读器自己的文件（宿主在打开 app 时自动创建）
+    reader.cfg  reader_progress.cfg  log.txt  大明1973.txt.idx …
+  settings/                 ← 设置 app 自己的（目前只有 NVS，没有文件）
+  terminal/
+```
+
+- **谁建目录**：宿主 `load_app()` 按 `.so` 名字去后缀，建 `/sdcard/apps/<名字>/`，并把路径记在 `g_app_dir`。
+- **怎么拿路径**：app 调 `so_app_dir(buf, cap)`（API 15+）拿自己的目录，**别自己拼** `/sdcard/apps/xxx`。
+- **自动落在那儿的**：`so_cfg_load/save`（`reader.cfg`）、`so_blob_load/save`（任意纯文件名）、`so_log_file`（`log.txt`）。
+- **迁移**：老的 `/sdcard/apps/reader.cfg` 会在第一次读不到时被自动读一次（一次性兼容），之后写到新位置。
+- 临时文件（上传的半成品）也别留在 `/apps`：传完立刻改名，失败的要删。
 
 ---
 
@@ -129,6 +146,26 @@ LDFLAGS="-shared -fPIC -static-libgcc -nostdlib -nostartfiles \
 ### 5.2 命令
 
 ```bash
+# ── 推荐：串口（USB 线，不依赖 WiFi，200 KB/s 级）──
+cd <repo>
+python3 tools/sercli.py ls /apps                        # 列目录（其余命令同 shell）
+python3 tools/sercli.py put apps/reader/build/reader.so /apps/reader.so
+python3 tools/sercli.py get /apps/reader/log.txt ./log.txt
+python3 tools/sercli.py cmd "cfg get snd_vol"
+python3 tools/sercli.py reboot
+
+# ── 网页（设备在同一网络时）──
+curl -X POST "http://<设备IP>/api/ul?path=/apps&name=x.so" --data-binary @build/x.so
+```
+
+串口协议与实现：`main/platform/sercli.h`（固件）+ `tools/sercli.py`（PC）。要点：
+
+- 走 USB-Serial-JTAG（`/dev/ttyACM0`），**和日志同一条线**，所以设备回复统一加 `papers3: ` 前缀，脚本自动丢弃日志行；
+- 文本命令直接转给 `papers3::sh`（固件里的真 shell），错误码/输出一致；
+- 传文件：`put <path> <size> <crc32>` → 设备回 `go` → **每 4KB 回一个 `ack <n>`** → 发完校验 crc 才改名（先写 `<path>.part`）。
+  **分块 ack 是必须的**：USB-CDC 没有硬件流控，设备写 SD 时会丢字节（实测 12.7KB 只收到 8KB）。
+
+```bash
 # 上传（IP 手给 —— 自动扫描会误中同网段电脑上的 Memos 服务）
 curl -X POST "http://192.168.3.57/api/ul?path=/apps&name=settings.so" \
      --data-binary @apps/settings/build/settings.so
@@ -171,8 +208,18 @@ python -m esptool --chip esp32s3 -p /dev/ttyACM0 --after hard_reset flash_id
 ### 6.2 推屏
 
 - `so_set_epd_mode(mode)` 决定**写入时怎么量化**：`1=QUALITY / 2=TEXT / 3=FAST / 4=FASTEST`；
-- `so_fill_rect` / `so_font_draw` 写像素 → `so_display()` **按足迹推送**；
-- 画与推**必须同档**；切屏才整屏 QUALITY（见 `UI_DESIGN.md` §9）；
+- `so_fill_rect` / `so_font_draw` **只写帧缓冲，绝不推屏**。`so_font_draw` 内部就是逐字形
+  `pushImage()`，面板只把区域累进 `_range_mod`；`_auto_display` 在固件启动时就关掉了（`app.h:49`）；
+- ★ **必须「画完再推」**：`so_display(x,y,w,h)` 推的是「`_range_mod`（上次推屏之后写过的所有像素）∪ 本次矩形」。
+  先推后画 = 这一笔永远不上屏，要等下一条命令的 `so_display()` 才被顺带带上去，而那时擦底又把它抹掉了
+  （实测症状：**输出慢一条命令、屏幕最底下那一两行看不见**）。终端 v2 踩过，v1 / 设置 / 阅读器都是画完再推；
+- 点阵底 + 灰阶字，**写**的时候分档、**推**的时候推两遍：
+  底在 `mode 3` 下写（Bayer 量化成 4×4 点阵）、字在 `mode 1` 下写（抗锯齿灰），
+  然后 `mode 3` 推一次（快，立刻看到新内容，有残影）→ `mode 2` 再推同一块（TEXT 档收干净）。
+  两段都在"画完之后"，帧缓冲不变，只是波形不同；
+- 批量绘制也可以用 `so_begin_write()` → 画一批 → `so_end_write()`：end 会推「这一批的并集」并 `wait`；
+- 推屏范围**别盖住状态栏**：固件刚用 FAST 推过点阵底，再用 GC13 推一遍会把它推成平灰，直到下次刷时间才恢复；
+- 切屏才整屏 QUALITY（见 `UI_DESIGN.md` §9）；
 - 每次推送**带原因**（`so_log_file` 落 SD）—— 面板会把「上次推屏之后写过的像素」并成一个大矩形，只能靠这条日志定位。
 
 ### 6.3 页面与覆盖层

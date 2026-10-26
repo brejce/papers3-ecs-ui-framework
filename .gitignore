@@ -57,3 +57,6 @@ __pycache__/
 
 # 备份文件（本项目脚本生成）
 *.bak-*
+
+# CodeGraph 本地符号图谱（codegraph init 生成，不共享）
+.codegraph/

@@ -1,6 +1,6 @@
-# m5ui 开发者手册
+# papers3 开发者手册
 
-> **版本** 1.0 ｜ **更新** 2026-10-04 ｜ **适用** `~/Project/m5ui`（M5PaperS3 / ESP32-S3）
+> **版本** 1.0 ｜ **更新** 2026-10-04 ｜ **适用** `~/Project/papers3`（M5PaperS3 / ESP32-S3）
 > **读者** 下一个接手的人（或几个月后的自己）。先读这份，再动代码。
 >
 > **本文管什么**：环境 / 构建 / 烧写 / 分区表 / 目录归属 / ECS 心智模型 / 硬约束（踩过的坑）/ 固件侧管线。
@@ -39,7 +39,7 @@
 
 ```bash
 source ~/esp-env/env.sh          # ESP-IDF v5.5.5（用 bash 的脚本；fish 用户见下）
-cd ~/Project/m5ui
+cd ~/Project/papers3
 
 ./tools/fetch_components.sh      # ★ 第一次 clone 后必须先跑：拉第三方组件（30 秒）
 idf.py build
@@ -119,12 +119,13 @@ I (4341) WEB: 文件管理页面已就绪
 nvs        0x9000    24K   ← 设置持久化 + WiFi PHY 校准
 phy_init   0xF000     4K
 factory    0x10000   3M    ← 固件（1.18MB，余 61%）
-fonts      0x310000  3M    ← 默认字体（裁切版 2.14MB，余 876KB）
+fonts      0x310000  3M    ← 默认字体（Maple Mono 子集 ≈2.23MB，余 ≈900KB）
 ```
 
 - **偏移变过**：factory 从 1MB 涨到 3MB 时，fonts 从 `0x110000` 挪到 `0x310000`。
   **这种改动必须重烧字体**，只烧 0x8000 那张表会读不到。
-- 烧字体：`esptool write_flash ... 0x310000 HarmonyOS_SansSC-subset.ttf`
+- 烧字体：`esptool write_flash ... 0x310000 fonts/MapleMono-CN-Regular-L1-tree.ttf`
+  （字体由 `tools/make_font_maple.py` 裁出来；改了字符集还要重跑 `tools/make_pinyin_index.py`）
 - 详见 `../display/TTF_FONT.md`。
 
 ---
@@ -531,7 +532,7 @@ if (!finish_init(pixel_size)) return false;   // 155  ← CFF 字体到这才被
 | # | 文件 | 状态 | 说明 |
 |---|---|---|---|
 | 0 | `text/ttf.h` | ✅ 已修 | **先验后提交**（见 13.2）；`set_size()` 补上 ascent/descent 重算；`load()` 补 munmap 防漏 |
-| 1 | `platform/nvs.h` | ✅ 新建 | `cfg::Config` + `load/save/set_font/clear_font/font_path`，命名空间 `"m5ui"` |
+| 1 | `platform/nvs.h` | ✅ 新建 | `cfg::Config` + `load/save/set_font/clear_font/font_path`，命名空间 `"papers3"` |
 | 2 | `ui/theme.h` | ✅ | 加 `G55/G99/GDD`，原有四个没动 |
 | 3 | `ui/widgets.h` | ✅ | 加 `setting_row` / `setting_text` |
 | 4 | `pages/settings.h` | ✅ 新建 | 五屏：设置主页 / 显示 / 字体 / 电源 / 关于 |
@@ -586,7 +587,7 @@ DIAG: 恢复内置: source=flash
 
 ```bash
 # 先把日志存成文件，再验（grep 一个文件计数才有意义）
-python3 - <<'PY' > /tmp/m5ui.log
+python3 - <<'PY' > /tmp/papers3.log
 import time, serial
 s = serial.Serial('/dev/ttyACM0', 115200, timeout=0.2)
 s.setDTR(False); s.setRTS(True); time.sleep(0.15); s.setRTS(False)
@@ -595,9 +596,9 @@ while time.time() - t0 < 15: buf += s.read(8192)
 print(buf.decode('utf-8', 'replace'))
 PY
 
-grep -c 'rst:0x' /tmp/m5ui.log        # 期望 1（只有自己那次复位）
-grep -cE 'panic|Guru Meditation' /tmp/m5ui.log   # 期望 0
-grep -E 'entities:' /tmp/m5ui.log      # 实体数要符合预期
+grep -c 'rst:0x' /tmp/papers3.log        # 期望 1（只有自己那次复位）
+grep -cE 'panic|Guru Meditation' /tmp/papers3.log   # 期望 0
+grep -E 'entities:' /tmp/papers3.log      # 实体数要符合预期
 ```
 
 - **刷屏类问题日志看不出来**，必须让用户肉眼看屏幕：字够不够大、有没有残影、
@@ -608,22 +609,6 @@ grep -E 'entities:' /tmp/m5ui.log      # 实体数要符合预期
 - **诊断/测试代码不进产物**：验证用的自检、临时日志，验完立刻删干净。
 - **未经明确要求不要删代码**：`OnLongPress`、`Battery`、`Progress` 这类没人调用的
   **往往是他计划要做的功能**，不是死代码。只删他点名的那一个。
-
-### 15.1 宿主端测试（可借鉴 InkBoy，**待建**）
-
-现在"非光学"的逻辑（ECS 内核、布局、触摸命中、LUT 步进、成本估算、NVS 读写回滚、TXT 分章）
-只能上机验，代价是编烧 + 眼判。InkBoy 的做法是**把真固件源码配上假硬件在 PC 上跑**：
-
-| 它的做法 | 我们的对应物 | 值不值 |
-|---|---|---|
-| `tools/host_fakes/`（假 GPIO/SPI/RTOS/heap/NVS/panel）+ `run_tests.sh` | 已有 `tools/test_chapter_classify.cpp`（单个），可长成同一套 | ★ 把"改一版烧一次"变成"改一版跑一秒" |
-| 35 个 `tools/test_*.py`（版面、预算算术、预设持久化/回滚、时序） | 目标：先搬 2 个纯逻辑模块（LUT 步进、触摸命中） | 分两步走，别一次全搬 |
-| `check_safety.py`：源码级闸门，驱动命令集一变就 fail 构建 | 同族风险存在（波形/面板命令），且我们的表是编译期数组 | 便宜保险：一条 grep 规则就能挡住"顺手加个裸命令" |
-| `-DINKBOY_DIAGNOSTICS=ON` 诊断构建（可注入假按键）+ 串口日志收成 CSV | §15 现在是手抄 `grep -c`；`EPD_LUT_MANUAL.md` §5.1 的总表也是手维护 | 中：台账可自动化 |
-| `make_release.sh` → merged image + `SHA256SUMS` | 现在只有 `idf.py build` | 低优先 |
-
-**纪律不变**：光学/观感结论（残影、墨色、闪不闪）**只认肉眼**，宿主测试证不了；
-反过来，宿主测试**能**证明的东西（掩膜算对没、预算扣对没、回滚回对没）**不该再靠眼睛**。
 
 ---
 

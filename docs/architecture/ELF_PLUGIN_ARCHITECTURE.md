@@ -164,7 +164,7 @@ esp_elf_unregister_symbol(&books_module.public_api);
 
 ---
 
-## 四、⚠️ 两条 m5ui 特有的硬约束（直接影响架构设计）
+## 四、⚠️ 两条 papers3 特有的硬约束（直接影响架构设计）
 
 ### 约束 1：**插件不能给 ECS World 添加新的组件类型**
 
@@ -228,7 +228,7 @@ esp_elf_unregister_symbol(&books_module.public_api);
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-10-08 | v1.1 | 补第 4 步真身（`esp_elf_register_symbol/unregister/find_symbol`，**反向注册序**）→ 新增 §3.1「用注册表做宿主中介」为首选做法，§3.2 降为次选 |
-| 2026-10-08 | v1.0 | 首版。符号解析链 5 步（含 `g_customer_elfsyms` 与 `dlmod_getaddr`）、宿主遮蔽/无自动依赖/同名去重三个后果、模块只跟宿主说话的架构规则、m5ui 两条硬约束、Kconfig 真名与默认值 |
+| 2026-10-08 | v1.0 | 首版。符号解析链 5 步（含 `g_customer_elfsyms` 与 `dlmod_getaddr`）、宿主遮蔽/无自动依赖/同名去重三个后果、模块只跟宿主说话的架构规则、papers3 两条硬约束、Kconfig 真名与默认值 |
 
 ## 附：核实用到的源码位置
 

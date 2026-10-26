@@ -66,7 +66,7 @@ esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, &ptr, &handle);
 | nvs | 0x9000 | 24KB | WiFi 的 PHY 校准数据也存这儿 |
 | phy_init | 0xF000 | 4KB | |
 | factory | 0x10000 | **3MB** | 固件（实测 1.16MB，余 61%） |
-| **fonts** | **0x310000** | **3MB** | 默认字体：HarmonyOS_SansSC 裁切版（1.93MB / 6899 字符） |
+| **fonts** | **0x310000** | **3MB** | 默认字体：**Maple Mono 子集**（GB2312 一级 3755 + 拼音补字，≈2.23MB；早期是鸿蒙裁切版） |
 
 合计 6.06MB，余 9.94MB。
 
@@ -160,6 +160,36 @@ print('缺:', [c for c in sorted(chars) if ord(c) not in f and ord(c)>=0x20])
 ```
 
 当前结果：只剩 `⬆ 📁 📄`（都在 `platform/web_files.h` 的 HTML 里，手机浏览器渲染，不进墨水屏字体）。
+
+---
+
+## 当前默认字体：Maple Mono（`tools/make_font_maple.py`）
+
+`fonts/` 里的 ttf 不进仓库（版权，`.gitignore` 已排除），但**生成过程完全可复现**：
+
+```bash
+# 1) 源字体：MapleMono-NF-CN-unhinted.zip → MapleMono-NF-CN-Regular.ttf（约 19MB）
+uv run tools/make_font_maple.py MapleMono-NF-CN-Regular.ttf fonts/MapleMono-CN-Regular-L1-tree.ttf
+
+# 2) ★ 改过字符集就必须重跑拼音索引（索引是按字体 cmap 反推音节的）
+uv run --with fonttools --with pypinyin tools/make_pinyin_index.py \
+  fonts/MapleMono-CN-Regular-L1-tree.ttf main/text/pinyin_index.h pinyin.idx
+
+# 3) 烧字体分区（见下节）；pinyin.idx 另外拷到 SD 卡 /papers3/pinyin.idx
+```
+
+字符集（脚本里写死，改这里才改字体）：
+
+| 组成 | 内容 | 为什么 |
+|---|---|---|
+| ASCII + 符号区 | 制表符 `─│┌`、箭头、几何图形、中文标点、全角标点 | 终端/界面用；不在汉字区，不显式列就被裁成空白 |
+| GB2312 **一级** 3755 | 0xB0A1~0xD7F9 | 日常用字。全集 6763 裁完约 4.3MB，**塞不进 3MB 分区**（脚本断言输出 ≤ `0x300000`） |
+| **拼音补字 30 个** | `EXTRA_HANZI` | 见下 |
+
+**拼音补字是硬需求**：音节表是 `make_pinyin_index.py` 从字体 cmap 反推出来的 —— 字不在字体里，这个音节在索引里就**根本不存在**，打出来一个候选都没有（实测：一级字库里打 `ei` 是空的）。
+补的是「一级字库缺字 → 整个音节消失」的那 14 个：`ei 诶誒`、`n 嗯`、`cen 岑嵾梣涔笒`、`nou 啂槈檽獳羺耨譳鎒`、`eng 鞥`、`fo 仏坲梻`、`chua 欻歘`、`den 扥扽`、`fiao 覅`、`hm 噷`、`lo 囖`、`m 呣`、`nun 黁`、`rua 挼`。
+
+> 再加字/换字体后，`main/text/pinyin_index.h`（编进固件）和 `pinyin.idx`（SD 可升级词库）**两边都要重生成**，否则音节表对不上，表现为"有拼音没候选"。
 
 ---
 
@@ -276,7 +306,7 @@ has_codepoint(0x4E2D) // ✅ Unicode 码点
 ## API
 
 ```cpp
-namespace m5ui::ttf {
+namespace papers3::ttf {
 
 bool     load(const char* label, float pixel_size);  // 映射分区并初始化
 bool     loaded();                                     // 渲染系统靠它决定走哪条路

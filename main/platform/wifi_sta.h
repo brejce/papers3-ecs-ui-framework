@@ -23,7 +23,7 @@
 #include "platform/nvs.h"      // 读「自动开热点」开关：决定起驱动时带不带 AP
 #include "platform/rtc_time.h"  // 联网成功 → 触发一次时间校准
 
-namespace m5ui::wifi_sta {
+namespace papers3::wifi_sta {
 
 inline constexpr int RETRY_MAX = 3;     // 失败自动重试几次
 
@@ -60,7 +60,7 @@ inline void on_event(void*, esp_event_base_t base, int32_t id, void* data) {
         if (ev) snprintf(g_ip, sizeof(g_ip), IPSTR, IP2STR(&ev->ip_info.ip));
         g_state = 2;
         ESP_LOGI("STA", "拿到地址 %s —— 手机浏览器打开 http://%s/", g_ip, g_ip);
-        m5ui::rtctime::kick_ntp("STA 拿到地址");   // 联上网就校准一次时间（RTC 是时间源，见 rtc_time.h）
+        papers3::rtctime::kick_ntp("STA 拿到地址");   // 联上网就校准一次时间（RTC 是时间源，见 rtc_time.h）
     }
 }
 
@@ -69,7 +69,7 @@ inline bool ensure() {
     // ★ 要连 STA 就顺手把**设备热点**也开起来 —— 那会让「自动开热点」开关形同虚设
     //   （开关关了、重启后照样搜得到 M5PaperS3）。所以按 NVS 里的开关决定模式：
     //   开 = APSTA；关 = 只起 STA。
-    if (!wifi_ap::g_up)           { if (!wifi_ap::start(m5ui::cfg::g_cfg.ap != 0)) return false; }
+    if (!wifi_ap::g_up)           { if (!wifi_ap::start(papers3::cfg::g_cfg.ap != 0)) return false; }
     else if (!wifi_ap::running()) { if (!wifi_ap::resume()) return false; }
     if (g_hooked) return true;
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_event, nullptr, nullptr);
@@ -164,4 +164,4 @@ inline const char* reason_text(int r) {
     return "连接失败（看串口日志）";
 }
 
-} // namespace m5ui::wifi_sta
+} // namespace papers3::wifi_sta

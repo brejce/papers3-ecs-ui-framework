@@ -2,7 +2,7 @@
 # push_rules.sh — 把 reader_rules.txt 推到设备 SD（分卷/分章规则**随时更新，不用刷固件**）
 #
 # 用法：
-#   ./tools/push_rules.sh                 # 自动扫本机所在 /24 找设备（80 端口在跑 + 像 m5ui 网页）
+#   ./tools/push_rules.sh                 # 自动扫本机所在 /24 找设备（80 端口在跑 + 像 papers3 网页）
 #   ./tools/push_rules.sh 192.168.43.14   # 指定 IP
 #
 # 做的事：确认 /sdcard/m5ui 存在 → 上传 → 回读比对 → 打印校验结果。
@@ -13,7 +13,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/reader_rules.txt"
-DST_DIR="/m5ui"
+DST_DIR="/papers3"
 DST_NAME="reader_rules.txt"
 
 [ -f "$SRC" ] || { echo "✗ 找不到 $SRC"; exit 1; }
@@ -26,7 +26,7 @@ if [ -z "$ip" ]; then
   [ -n "$net" ] || { echo "✗ 拿不到本机网段，请直接给 IP"; exit 1; }
   echo "扫描 $net.0/24 找设备…"
   for i in $(seq 1 254); do
-    ( curl -s -m 1 "http://$net.$i/" 2>/dev/null | grep -qi 'm5ui\|文件管理' && echo "$net.$i" > /tmp/_m5ip ) &
+    ( curl -s -m 1 "http://$net.$i/" 2>/dev/null | grep -qi 'papers3\|文件管理' && echo "$net.$i" > /tmp/_m5ip ) &
   done
   wait
   ip="$(cat /tmp/_m5ip 2>/dev/null | head -1)"; rm -f /tmp/_m5ip

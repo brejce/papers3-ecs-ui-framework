@@ -4,7 +4,7 @@
 #include "ecs/components.h"
 #include <M5Unified.h>
 
-namespace m5ui::systems {
+namespace papers3::systems {
 
 // ──────────────────────────────────────────────
 // flex_system — Flexbox 布局
@@ -156,4 +156,4 @@ inline void flex_layout(ecs::World& w) {
     }
 }
 
-} // namespace m5ui::systems
+} // namespace papers3::systems

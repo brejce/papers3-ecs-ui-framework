@@ -5,11 +5,11 @@
 // Memphis 风格经 EPD 化简后的取值：白底、纯黑文字、直角、硬阴影、零装饰。
 // 撞色全砍 —— 墨水屏只有黑白灰，"颜色"的深浅靠**墨色档位**（见 text/ttf.h 的 ink_level）。
 //
-// 用法：theme::BG_WHITE 之类。pages/ 在 ui/ 之外，靠 `using namespace m5ui::ui;` 找到它。
+// 用法：theme::BG_WHITE 之类。pages/ 在 ui/ 之外，靠 `using namespace papers3::ui;` 找到它。
 
 #include <cstdint>
 
-namespace m5ui::ui::theme {
+namespace papers3::ui::theme {
 
 constexpr uint32_t BG_WHITE    = 0xFFFFFF;
 constexpr uint32_t BG_BLACK    = 0x000000;
@@ -33,4 +33,4 @@ constexpr uint32_t GDD         = 0xDDDDDD;   // 弱分隔、浅底
 //   直角（radius 恒 0）、描边 2px（按钮 3px）、硬阴影无模糊（按钮 5px / 输入框 3px / 键盘键 2px）
 //   按下 = 阴影收缩到 0 + 描边加粗 2px，元素和文字**原地不动**
 
-} // namespace m5ui::ui::theme
+} // namespace papers3::ui::theme

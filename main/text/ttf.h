@@ -43,7 +43,7 @@
 #include "third_party/stb_truetype.h"   // 只拿声明；实现在 ttf_impl.cpp
 #include "text/glyph_cache.h"           // 字形位图 LRU 缓存（PSRAM）
 
-namespace m5ui::ttf {
+namespace papers3::ttf {
 
 static const char* TAG = "TTF";
 
@@ -66,6 +66,7 @@ struct FontCtx {
     //   0 = 未加载，永远不参与命中。
     uint16_t        fid = 0;
 };
+
 
 // 字体身份发号器（每次成功加载 +1）
 inline uint16_t g_fid_seq = 0;
@@ -294,13 +295,21 @@ inline float scale(const FontCtx& c)       { return c.scale; }
 inline float scale()                       { return g_default.scale; }
 
 // UTF-8 → codepoint
+// ★ 逐字节读（volatile）：Xtensa 的 l16ui/l32i 要求对齐，而 .so 的字符串常常落在
+//   奇数地址（正文缓冲按字节拼接，行首就是奇偶不定）。编译器会把 s[1..2] 合并成一条
+//   16/32 位读 → 奇数地址直接 LoadStoreError（实测：终端 app 一进 page_init 就 panic）。
+inline uint8_t ld_u8(const uint8_t* p) { return *(const volatile uint8_t*)p; }
+
 inline int32_t utf8_next(const char*& p) {
     const uint8_t* s = (const uint8_t*)p;
-    uint8_t c = *s;
+    const uint8_t c = ld_u8(s);
     if (c < 0x80)           { p += 1; return c; }
-    if ((c & 0xE0) == 0xC0) { p += 2; return ((c & 0x1F) << 6) | (s[1] & 0x3F); }
-    if ((c & 0xF0) == 0xE0) { p += 3; return ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F); }
-    if ((c & 0xF8) == 0xF0) { p += 4; return ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) | ((s[2] & 0x3F) << 6) | (s[3] & 0x3F); }
+    if ((c & 0xE0) == 0xC0) { const uint8_t b1 = ld_u8(s + 1); p += 2;
+                              return ((c & 0x1F) << 6) | (b1 & 0x3F); }
+    if ((c & 0xF0) == 0xE0) { const uint8_t b1 = ld_u8(s + 1), b2 = ld_u8(s + 2); p += 3;
+                              return ((c & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F); }
+    if ((c & 0xF8) == 0xF0) { const uint8_t b1 = ld_u8(s + 1), b2 = ld_u8(s + 2), b3 = ld_u8(s + 3); p += 4;
+                              return ((c & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F); }
     p += 1; return 0xFFFD;
 }
 
@@ -582,4 +591,4 @@ inline int32_t draw_text_from(int32_t x, int32_t y, const char* utf8, int char_f
     return draw_text_from(g_default, x, y, utf8, char_from, fg, bg);
 }
 
-} // namespace m5ui::ttf
+} // namespace papers3::ttf

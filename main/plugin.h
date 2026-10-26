@@ -1,11 +1,11 @@
 #pragma once
 
-namespace m5ui::plugin {
+namespace papers3::plugin {
 
 // ── API 版本（必须和 apps/common/so_api.h 的 SO_API_VERSION_MAJOR/MINOR 一致）──
 // .so 侧导出 so_app_api_version() 报自己的版本；主版本不一致就拒绝加载。
 inline constexpr uint16_t API_VERSION_MAJOR = 1;
-inline constexpr uint16_t API_VERSION_MINOR = 13;   // 2: +so_cpu_load/so_mem_used_pct · 6: +4bpp 页快照 · 7: +so_read_book_at · 8: +so_book_size/so_blob_load/so_blob_save · 9: +so_cfg_*/so_net_*/so_list_files · 10: +so_ime_open · 11: +so_wifi_scan/so_wifi_saved/so_wifi_connect/so_wifi_forget · 12: so_ime_open 加 cancel 回调 · 13: +so_sound_test
+inline constexpr uint16_t API_VERSION_MINOR = 18;   // 2: +so_cpu_load/so_mem_used_pct · 6: +4bpp 页快照 · 7: +so_read_book_at · 8: +so_book_size/so_blob_load/so_blob_save · 9: +so_cfg_*/so_net_*/so_list_files · 10: +so_ime_open · 11: +so_wifi_scan/so_wifi_saved/so_wifi_connect/so_wifi_forget · 12: so_ime_open 加 cancel 回调 · 13: +so_sound_test · 14: +so_sh_exec · 15: +so_app_dir · 16: +so_ime_set_sticky · 17: +so_bar_set（全局状态栏）
 
 // 从 SD 卡加载 hello_page.so 并调用 page_init()（.so 插件页验证）
 void test();
@@ -26,7 +26,7 @@ void close();
 // 是否有 .so app 正在运行（电源管理用：独占时别熄屏 —— 唤醒没东西可重画 → 白屏）
 bool active();
 
-}   // namespace m5ui::plugin
+}   // namespace papers3::plugin
 
 // ── 下面的函数定义在 plugin.cpp 里、位于 namespace **之外** ──
 

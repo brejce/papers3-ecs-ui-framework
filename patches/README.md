@@ -21,9 +21,47 @@
 还原方式：
 
 ```bash
-./tools/fetch_components.sh        # 拉上游 zip + 打补丁，30 秒
+./tools/fetch_components.sh        # 按 components.lock 拉上游 zip + 核校验 + 打补丁，30 秒
+./tools/fetch_components.sh --verify   # 只校验现有 components/（不下载、不改动）
 idf.py build
 ```
+
+## 版本钉死：根目录 `components.lock`（进 git）
+
+仓库里**唯一**记录「用的是哪些版本」的文件就是它，脚本从它读，别处没有第二份版本号：
+
+```json
+{
+  "registry": "https://components-file.espressif.com/components",
+  "components": [
+    {"name": "m5gfx", "namespace": "m5stack", "version": "0.2.29",
+     "patches": [{"path": "patches/m5gfx/Panel_EPD.cpp.patch",
+                  "sha256": "9ca2aa24…", "touches": ["src/lgfx/v1/platforms/esp32/Panel_EPD.cpp"]}]}
+  ],
+  "git_sources": [
+    {"name": "stb_truetype", "commit": "6e9f34d5…", "dest": "main/third_party/stb_truetype.h"}
+  ]
+}
+```
+
+锁定规则（都是脚本强制的，不是注释）：
+
+| 锁什么 | 怎么锁 | 出问题会怎样 |
+|---|---|---|
+| 版本 | `version` 字段（ESP registry 的版本不可变） | 拉错版本 → 补丁打不上 → 立刻报错 |
+| 内容 | 安装前拿官方 `CHECKSUMS.json` **逐文件核 sha256** | 上游内容被换/网络劫持 → 拒绝安装 |
+| 补丁本身 | 每个 patch 的 `sha256` | 改了补丁却忘了同步 lock → 报错（补丁必须打在对应版本上） |
+| 补丁是否真打上 | patch 里第一条新增行当标记，装上后回查 | 被组件管理器冲掉 → `--verify` 一眼看出 |
+| 主动裁剪 | `prune: ["test_apps/"]` | 装完删掉不参与构建的上游自测工程 |
+
+官方校验表另存一份在 `components/.manifests/<name>-<version>.json`（不进 git，重拉会补）。
+
+> 为什么不直接在 `main/idf_component.yml` 里写依赖？见下一节 —— 组件管理器会按
+> `dependencies.lock` 重新下载覆盖，补丁就没了。
+
+> `components/freetype/`：一份 FreeType 2.13.3（上游 `VER-2-13-3`，`ftoption.h` 有 3 处 m5ui 改动）。
+> 它**不在** lock 里，因为当前固件根本没引用它（`m5ui.elf` 里没有 `FT_` 符号，`main/`、`apps/` 也无 include）。
+> 想减负：`rm -rf components/freetype`（8.6MB，不进 git，删了不影响构建）。
 
 ## 关键约束：不能交给组件管理器自动拉
 

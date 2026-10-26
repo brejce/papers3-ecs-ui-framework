@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace m5ui::ecs {
+namespace papers3::ecs {
 
 // ──────────────────────────────────────────────
 // World — 实体管理器
@@ -35,7 +35,17 @@ public:
     // ── Entity 生命周期 ──
 
     Entity spawn() {
-        if (_next >= MAX_ENTITIES) return INVALID_ENTITY;
+        if (_next >= MAX_ENTITIES) {
+            // ★ 实体编号**不复用**（destroy 只清 alive，不回收到池子里）→ 一旦越界，
+            //   之后所有新控件都会静默拿不到实体（add() 对非法实体是 no-op），
+            //   表现是"新加的控件就是不出现"，而且串口一行日志都没有。
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                ESP_LOGE("ECS", "实体表满（%d）—— 之后所有 spawn() 都会失败", (int)MAX_ENTITIES);
+            }
+            return INVALID_ENTITY;
+        }
         Entity e = _next++;
         _alive[e] = true;
         _masks[e] = {};
@@ -141,4 +151,4 @@ private:
     std::array<ComponentMask, MAX_ENTITIES> _masks;
 };
 
-} // namespace m5ui::ecs
+} // namespace papers3::ecs

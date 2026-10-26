@@ -22,7 +22,7 @@
 #include <M5GFX.h>
 #include <lgfx/v1/platforms/esp32/Panel_EPD.hpp>
 
-namespace m5ui::epd {
+namespace papers3::epd {
 
 static const char* TAG = "LUT";
 
@@ -218,4 +218,4 @@ bool apply_lut(uint8_t t) {
     return true;
 }
 
-} // namespace m5ui::epd
+} // namespace papers3::epd

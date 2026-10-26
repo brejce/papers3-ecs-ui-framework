@@ -12,7 +12,7 @@
 #include "platform/sound.h"     // 触摸反馈音
 #include <M5Unified.h>
 
-namespace m5ui {
+namespace papers3 {
 
 // 输入法覆盖层的每帧自持轮询（编辑条右侧 × 关闭按钮），由 ime.h 的 build() 登记。
 // 为什么走函数指针、不在 app.h 里直接 include ime.h：ime.h → manager.h → app.h，
@@ -68,7 +68,7 @@ public:
         //   不会因为同一次按下被多个消费者看到而连响。
         {
             const int n = M5.Touch.getCount();
-            if (n > 0 && _prev_touch == 0) m5ui::sound::click();
+            if (n > 0 && _prev_touch == 0) papers3::sound::click();
             _prev_touch = n;
         }
         rtctime::tick();                            // 网络校准到了 → 写回 RTC（I2C 只在主循环里做）
@@ -86,4 +86,4 @@ private:
     int  _prev_touch = 0;     // 上一帧触点数（0→1 = 按下沿 → 反馈音）
 };
 
-} // namespace m5ui
+} // namespace papers3

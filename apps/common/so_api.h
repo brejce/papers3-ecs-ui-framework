@@ -38,7 +38,9 @@ extern "C" {
 // 12: so_ime_open 加 cancel 回调（编辑条 × 关闭按钮）
 // 13: 新增 so_sound_test（触摸反馈音试听）
 // 14: 新增 so_sh_exec（设备上的真 shell：apps/terminal 用）
-#define SO_API_VERSION_MINOR 14
+// 15: 新增 so_app_dir（每个 app 的私有目录 /sdcard/apps/<so 名>/；/apps 里只放 .so）
+// 18: 新增 so_ime_band_y（输入法覆盖层顶边；`.so` 排版让开键盘别再自己抄常量）
+#define SO_API_VERSION_MINOR 18
 #define SO_API_VERSION ((uint32_t)((SO_API_VERSION_MAJOR << 16) | SO_API_VERSION_MINOR))
 
 // 可选的显示名（没有就用文件名）。launcher 上显示这个，不再显示 reader.so
@@ -179,6 +181,12 @@ int  so_wifi_forget(const char* ssid);                    // 忘掉一个已存�
 //   回调里要立刻拷走（下一次打开输入法会覆盖）；cancel = 点「×」取消时回调（可 null）。
 //   返回 0 = 已打开，-1 = 输入法不可用。
 int  so_ime_open(const char* seed, void (*done)(const char*), void (*cancel)(void));
+// 常驻键盘：1 = 键盘一直显示，回车只把这一行交回 app（不收起覆盖层），
+// 只有退出 app 才消失。终端用这个；设置页那种"输完就收"别开。
+void so_ime_set_sticky(int on);
+// 全局统一状态栏（画 + 点击都归固件）：label = 左键文字（"< BACK" / "< EXIT"），
+// cb = 左键功能，传 nullptr 表示"退出本 app"。app 不要自己画 0~60。
+void so_bar_set(const char* label, void (*cb)(void));
 
 // ── 触摸反馈音（设置页「试听」用）──
 // 重新加载 cfg 里的音效文件并立刻播一遍；不看 snd 开关（试听就是要听见）。
@@ -194,6 +202,15 @@ int  so_sound_test(void);
 //   *flags: bit0 = 已排重启（推完屏就不用管了，800ms 后自己重启）
 // 命令实现在 main/platform/sh.h（虚根 /sdcard，/apps 会补成 /sdcard/apps）
 int  so_sh_exec(const char* line, char* out, int cap, int* code, int* flags);
+
+// ── 当前 app 的私有目录（/sdcard/apps/<so 名去掉 .so>）──
+// 宿主在打开 app 时自动创建；日志(<dir>/log.txt)、so_cfg_*/so_blob_* 都在这个目录里。
+// 返回路径长度；-1 = 还没进 app。
+int  so_app_dir(char* out, int cap);
+
+// 输入法覆盖层（键盘）的顶边像素 y —— `.so` 排版要让开键盘时问这个，**不要自己抄常量**
+// （固件改键盘几何时会变：编辑条高度、候选栏位置都影响它）。返回 0 = 覆盖层还没建好。
+int  so_ime_band_y(void);
 
 // ── 通用目录列举（.so 里没有文件系统 API，只能请宿主列）──
 //   names = max 行 × cap 字节的连续缓冲；ext 只留该后缀（nullptr/""=全要）；返回条数

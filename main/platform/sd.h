@@ -14,7 +14,7 @@
 //
 // 挂载（SPI2）+ 找文件。以后的手机扫码文件管理（增删改查 SD）也从这里长。
 
-namespace m5ui::sd {
+namespace papers3::sd {
 
 // M5PaperS3 的 SD 卡是 SPI 模式（不是 SDMMC）：
 //   CLK=39, MOSI(COPI)=38, MISO(CIPO)=40, CS=47
@@ -216,4 +216,4 @@ inline bool remount_if_absent() {
     return mount();
 }
 
-} // namespace m5ui::probe
+} // namespace papers3::probe

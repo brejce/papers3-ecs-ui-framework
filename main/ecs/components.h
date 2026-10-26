@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace m5ui::ecs::components {
+namespace papers3::ecs::components {
 
 // ──────────────────────────────────────────────
 // 组件定义 — 纯数据，没有方法
@@ -85,6 +85,9 @@ struct Bitmap {
     uint8_t  bpp = 1;                // 1 = 1bit（位=1 画墨）；4 = 4bit 灰（0=黑 15=白）
     uint32_t fg = 0x000000;
     uint32_t bg = 0xFFFFFF;
+    int8_t   scale = 1;              // 整数倍最近邻放大（1 = 原尺寸）。app 图标是 32×32 的点阵，
+                                     // 启动器一行有两行字（名称 26 + 简介 19 ≈ 54px），图标得跟上，
+                                     // 所以按 2× 画成 64×64 —— 像素风放大不该插值，硬边才对。
 };
 
 // ── 可触摸 ──
@@ -187,4 +190,4 @@ struct Interval {
     void* ctx = nullptr;
 };
 
-} // namespace m5ui::ecs::components
+} // namespace papers3::ecs::components

@@ -713,14 +713,28 @@ inline void bar_touch_clock() {
     char old[8];
     ui::scopy(old, ui::g_clock, sizeof(old));
     ui::bar_refresh();
-    if (ui::streq(old, ui::g_clock)) return;
+    if (ui::streq(old, ui::g_clock)) return;      // 分钟没跳 → 一次都不推
     so_font_set_size(ui::g_font, ui::SZ_BAR);
     const int32_t lh = so_font_line_height(ui::g_font);
-    const R r = {ui::SCR_W / 2 - 90, (ui::BAR_H - lh) / 2 - 2, 180, lh + 4};
-    so_set_epd_mode(ui::MF); ui::box(r, ui::L14);
+    const int32_t y  = (ui::BAR_H - lh) / 2;
+
+    // ★ 擦/推 = 「旧 ∪ 新」的真实墨迹 ±3px。
+    //   原来是固定 SCR_W/2-90、180px 宽的一大块 —— 每分钟都在屏中间闪一块方块。
+    const int32_t xo = ui::clock_x(old), xn = ui::clock_x(ui::g_clock);
+    int l1 = 0, r1 = 0, l2 = 0, r2 = 0;
+    if (!ui::text_span(old, ui::SZ_BAR, 2, &l1, &r1)) { l1 = 0; r1 = 0; }
+    if (!ui::text_span(ui::g_clock, ui::SZ_BAR, 2, &l2, &r2)) { l2 = 0; r2 = 0; }
+    int32_t x0 = (xo + l1 < xn + l2) ? (xo + l1) : (xn + l2);
+    int32_t x1 = (xo + r1 > xn + r2) ? (xo + r1) : (xn + r2);
+    x0 -= 3; x1 += 3;
+    if (x0 < 0) x0 = 0;
+    if (x1 > ui::SCR_W) x1 = ui::SCR_W;
+    if (x1 <= x0) return;
+    const R r = {x0, y - 2, x1 - x0, lh + 4};
+    so_set_epd_mode(ui::MF); ui::box(r, ui::L14);   // 擦 = FAST 写点阵底
     so_set_epd_mode(ui::MT);
-    ui::text(ui::clock_x(ui::g_clock), (ui::BAR_H - lh) / 2, ui::g_clock, ui::GRAY, 2);
-    ui::push(r, "时钟");
+    ui::text(xn, y, ui::g_clock, ui::GRAY, 2);
+    ui::push(r, "时钟");                             // 一次推屏
 }
 
 // 整屏重画一页（缓存没命中时）

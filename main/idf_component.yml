@@ -9,7 +9,10 @@ dependencies:
   ##    下到 managed_components/，遮蔽（或直接覆盖）本地改动。
   ##
   ##    这几个是**第三方库**（约 165MB / 1000+ 文件），**不进 git**：
-  ##      ./tools/fetch_components.sh     ← 拉上游 zip + 打 patches/ 里的本地补丁（30 秒）
+  ##      ./tools/fetch_components.sh     ← 按根目录 components.lock 拉上游 zip（版本钉死、
+  ##                                        逐文件核官方 CHECKSUMS.json）+ 打 patches/ 里的本地补丁
+  ##      ./tools/fetch_components.sh --verify   ← 只校验现有 components/ 是不是 lock 那一版
+  ##    ★ 版本号的唯一权威是 components.lock，改版本只改那里。
   ##
   ##    本地改动一共 5 个文件，逐条说明见 patches/README.md：
   ##      1) m5gfx/Panel_EPD.{cpp,hpp}  ← EPD 波形换表钩子（reload_lut_table /
